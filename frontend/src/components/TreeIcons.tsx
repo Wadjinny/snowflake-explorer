@@ -432,7 +432,7 @@ export function PlayIcon({ className }: IconProps) {
   )
 }
 
-/** Collapse all expanded branches (two stacked chevrons). */
+/** Collapse all expanded branches (two stacked chevrons down). */
 export function FoldAllIcon({ className }: IconProps) {
   return (
     <svg
@@ -455,6 +455,103 @@ export function FoldAllIcon({ className }: IconProps) {
         strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Expand all collapsed branches (two stacked chevrons up). */
+export function ExpandAllIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4 10.5L8 6.5l4 4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 6.5L8 2.5l4 4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+/** Show all (list). */
+export function ListAllIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M3 4h10M3 8h10M3 12h10"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+/** Visible / selected (open eye). */
+export function EyeIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        fill="none"
+      />
+      <circle cx="8" cy="8" r="1.75" stroke="currentColor" strokeWidth="1.25" />
+    </svg>
+  )
+}
+
+/** Hidden (eye with slash). */
+export function EyeOffIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M1.5 8s2.5-4.5 6.5-4.5c1.2 0 2.3.4 3.2 1M14.5 8s-1 .8-2.2 1.8M3 3l10 10"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M6.2 6.4A2 2 0 0 0 9.6 9.8"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        fill="none"
       />
     </svg>
   )

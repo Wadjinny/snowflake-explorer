@@ -4,6 +4,7 @@ import { RouterProvider } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './index.css'
 import { ConnectionsProvider } from './connections.tsx'
+import { DialogProvider } from './dialog.tsx'
 import { FavoritesProvider } from './favoritesContext.tsx'
 import { SelectionsProvider } from './selectionsContext.tsx'
 import { TransformationsProvider } from './transformationsContext.tsx'
@@ -21,18 +22,20 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ConnectionsProvider>
-      <FavoritesProvider>
-        <SelectionsProvider>
-          <TransformationsProvider>
-            <TransformTabsProvider>
-              <QueryClientProvider client={queryClient}>
-                <RouterProvider router={router} />
-              </QueryClientProvider>
-            </TransformTabsProvider>
-          </TransformationsProvider>
-        </SelectionsProvider>
-      </FavoritesProvider>
-    </ConnectionsProvider>
+    <DialogProvider>
+      <ConnectionsProvider>
+        <FavoritesProvider>
+          <SelectionsProvider>
+            <TransformationsProvider>
+              <TransformTabsProvider>
+                <QueryClientProvider client={queryClient}>
+                  <RouterProvider router={router} />
+                </QueryClientProvider>
+              </TransformTabsProvider>
+            </TransformationsProvider>
+          </SelectionsProvider>
+        </FavoritesProvider>
+      </ConnectionsProvider>
+    </DialogProvider>
   </StrictMode>,
 )

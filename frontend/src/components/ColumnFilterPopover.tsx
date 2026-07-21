@@ -243,7 +243,6 @@ export default function ColumnFilterPopover({
   }, [anchorRef])
 
   useEffect(() => {
-    if (!anchorRef) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
@@ -253,7 +252,7 @@ export default function ColumnFilterPopover({
     const onDoc = (e: MouseEvent) => {
       const t = e.target as Node
       if (rootRef.current?.contains(t)) return
-      if (anchorRef.current?.contains(t)) return
+      if (anchorRef?.current?.contains(t)) return
       onClose()
     }
     window.addEventListener('keydown', onKey, true)

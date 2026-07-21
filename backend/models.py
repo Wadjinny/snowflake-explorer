@@ -191,11 +191,13 @@ class TransformRecipe(BaseModel):
     aggregations: list[Aggregation] = Field(default_factory=list)
     pivot: PivotSpec | None = None
     sort: SortSpec | None = None
-    limit: int = Field(default=500, ge=1, le=5000)
 
 
 class TransformRequest(BaseModel):
     recipe: TransformRecipe
+    # Result pager page size.
+    limit: int = Field(default=100, ge=1, le=5000)
+    offset: int = Field(default=0, ge=0)
 
 
 class TransformResult(BaseModel):

@@ -9,6 +9,7 @@ import {
   type FavoriteSchemaNode,
 } from '../favorites'
 import { useFavorites } from '../favoritesContext'
+import { useDialog } from '../dialog'
 import { objectPath } from '../paths'
 import {
   selectionFilterCount,
@@ -454,6 +455,18 @@ function TransformationsList({
   onOpen: (id: string) => void
   onRemove: (id: string) => void
 }) {
+  const dialog = useDialog()
+
+  const confirmRemove = async (t: SavedTransformation) => {
+    const ok = await dialog.confirm({
+      title: 'Delete transformation',
+      message: `Delete “${t.name}”? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (ok) onRemove(t.id)
+  }
+
   return (
     <>
       {items.map((t) => {
@@ -492,7 +505,7 @@ function TransformationsList({
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
-                onRemove(t.id)
+                void confirmRemove(t)
               }}
             >
               <CloseIcon />

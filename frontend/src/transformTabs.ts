@@ -3,12 +3,14 @@ import {
   defaultTransformLayout,
   defaultTransformName,
   makeEmptyRecipe,
+  normalizeRecipe,
   normalizeTransformLayout,
   type ChartConfig,
   type SavedTransformation,
   type TransformPanelLayout,
   type TransformRecipe,
 } from './transformations'
+import { normalizeColumnWidths, isColumnWidthsRecord } from './openTabs'
 import type { SelectedObject } from './types'
 
 /** Session-only open transform (draft). URL uses `id`. */
@@ -20,16 +22,45 @@ export type OpenTransformTab = {
   recipe: TransformRecipe
   chart: ChartConfig
   layout: TransformPanelLayout
+  /** Result-table column display order (empty = result order). */
+  columnOrder: string[]
+  /** Result-table column widths (px). */
+  columnWidths: Record<string, number>
+  /** Result pager page size (session + saved). */
+  pageSize: number
+  /** Result pager offset (session). */
+  offset: number
   dirty: boolean
 }
+
+export const DEFAULT_PAGE_SIZE = 100
+const PAGE_SIZE_MAX = 5000
 
 function storageKey(connectionId: string): string {
   return `sf-explorer.transformTabs:${connectionId}`
 }
 
+function normalizePageSize(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_PAGE_SIZE
+  }
+  return Math.min(PAGE_SIZE_MAX, Math.max(1, Math.floor(value)))
+}
+
 function isOpenTransformTab(value: unknown): value is OpenTransformTab {
   if (!value || typeof value !== 'object') return false
   const t = value as Record<string, unknown>
+  const orderOk =
+    t.columnOrder === undefined ||
+    (Array.isArray(t.columnOrder) &&
+      t.columnOrder.every((c) => typeof c === 'string'))
+  const widthsOk = isColumnWidthsRecord(t.columnWidths)
+  const offsetOk =
+    t.offset === undefined ||
+    (typeof t.offset === 'number' && Number.isFinite(t.offset) && t.offset >= 0)
+  const pageSizeOk =
+    t.pageSize === undefined ||
+    (typeof t.pageSize === 'number' && Number.isFinite(t.pageSize))
   return (
     typeof t.id === 'string' &&
     (t.savedId === null || typeof t.savedId === 'string') &&
@@ -38,8 +69,26 @@ function isOpenTransformTab(value: unknown): value is OpenTransformTab {
     t.recipe !== null &&
     typeof t.chart === 'object' &&
     t.chart !== null &&
-    typeof t.dirty === 'boolean'
+    typeof t.dirty === 'boolean' &&
+    orderOk &&
+    widthsOk &&
+    offsetOk &&
+    pageSizeOk
   )
+}
+
+function normalizeTab(t: OpenTransformTab): OpenTransformTab {
+  return {
+    ...t,
+    recipe: normalizeRecipe(t.recipe),
+    layout: normalizeTransformLayout(
+      (t as OpenTransformTab & { layout?: TransformPanelLayout }).layout,
+    ),
+    columnOrder: Array.isArray(t.columnOrder) ? t.columnOrder : [],
+    columnWidths: normalizeColumnWidths(t.columnWidths),
+    pageSize: normalizePageSize(t.pageSize),
+    offset: typeof t.offset === 'number' && t.offset >= 0 ? t.offset : 0,
+  }
 }
 
 export function loadTransformTabs(connectionId: string): OpenTransformTab[] {
@@ -48,12 +97,7 @@ export function loadTransformTabs(connectionId: string): OpenTransformTab[] {
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(isOpenTransformTab).map((t) => ({
-      ...t,
-      layout: normalizeTransformLayout(
-        (t as OpenTransformTab & { layout?: TransformPanelLayout }).layout,
-      ),
-    }))
+    return parsed.filter(isOpenTransformTab).map(normalizeTab)
   } catch {
     return []
   }
@@ -79,6 +123,10 @@ export function makeDraftTab(source: SelectedObject): OpenTransformTab {
     recipe,
     chart: defaultChartConfig(),
     layout: defaultTransformLayout(),
+    columnOrder: [],
+    columnWidths: {},
+    pageSize: DEFAULT_PAGE_SIZE,
+    offset: 0,
     dirty: true,
   }
 }
@@ -91,6 +139,12 @@ export function makeTabFromSaved(saved: SavedTransformation): OpenTransformTab {
     recipe: structuredClone(saved.recipe),
     chart: structuredClone(saved.chart),
     layout: normalizeTransformLayout(saved.layout),
+    columnOrder: Array.isArray(saved.columnOrder)
+      ? [...saved.columnOrder]
+      : [],
+    columnWidths: normalizeColumnWidths(saved.columnWidths),
+    pageSize: normalizePageSize(saved.pageSize),
+    offset: 0,
     dirty: false,
   }
 }

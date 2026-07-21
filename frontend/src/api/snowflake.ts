@@ -177,11 +177,16 @@ export type TransformRunResult = PreviewResult & { sql: string }
 export function runTransform(
   connection: Connection,
   recipe: unknown,
+  opts: { limit?: number; offset?: number } = {},
 ): Promise<TransformRunResult> {
   return apiFetch(connection, '/api/transform/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipe }),
+    body: JSON.stringify({
+      recipe,
+      limit: opts.limit ?? 100,
+      offset: opts.offset ?? 0,
+    }),
   })
 }
 

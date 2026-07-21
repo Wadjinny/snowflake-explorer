@@ -253,11 +253,12 @@ def build_where(
     filters: list[tuple[str, str, list[Any]] | tuple[str, str, list[Any], str]],
     *,
     aliases: dict[str, str] | None = None,
+    default_alias: str = "t0",
 ) -> str:
     """filters: list of (column, type, values[, op]).
 
     When *aliases* is provided, each filter column may be ``alias.column``;
-    bare columns map via aliases.get(column) or default alias ``t0``.
+    bare columns map via aliases.get(column) or *default_alias*.
     """
     clauses: list[str] = []
     for item in filters:
@@ -273,7 +274,7 @@ def build_where(
                 a, _, c = column.partition(".")
                 alias, col = a, c
             else:
-                alias = aliases.get(column, "t0")
+                alias = aliases.get(column, default_alias)
                 col = column
         clause = build_filter_clause(col, col_type, values, alias=alias, op=op)
         if clause:

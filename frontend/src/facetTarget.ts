@@ -1,4 +1,5 @@
 import type {
+  ColumnFilter,
   ColumnInfo,
   ColumnType,
   FacetableType,
@@ -100,4 +101,22 @@ export function facetTargetFromRecipe(
     filterKey: `${recipe.sourceAlias}.${column}`,
     type: columnType,
   }
+}
+
+/**
+ * Recipe filters that hit the same physical alias as `target`, rewritten to
+ * bare column names for the facet API (which scopes counts by other filters).
+ */
+export function tableFiltersForTarget(
+  recipe: TransformRecipe,
+  target: FacetTarget,
+): ColumnFilter[] {
+  const targetAlias = parseColumnRef(target.filterKey, recipe.sourceAlias).alias
+  return recipe.filters.flatMap((f) => {
+    const { alias, column } = parseColumnRef(f.column, recipe.sourceAlias)
+    if (alias !== targetAlias) return []
+    const next: ColumnFilter = { column, type: f.type, values: f.values }
+    if (f.op) next.op = f.op
+    return [next]
+  })
 }

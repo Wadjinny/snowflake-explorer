@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from filters import build_filter_clause, sql_value_literal
+from filters import build_where, sql_value_literal
 from models import (
     Aggregation,
     PivotSpec,
@@ -236,24 +236,13 @@ def compile_inner_select(
 
 
 def _build_qualified_where(recipe: TransformRecipe) -> str:
-    clauses: list[str] = []
-    from filters import build_filter_clause
-
-    for f in recipe.filters:
-        alias: str | None
-        col: str
-        if "." in f.column:
-            alias, _, col = f.column.partition(".")
-        else:
-            alias, col = recipe.sourceAlias, f.column
-        clause = build_filter_clause(
-            col, f.type, f.values, alias=alias, op=getattr(f, "op", "in") or "in"
-        )
-        if clause:
-            clauses.append(clause)
-    if not clauses:
-        return ""
-    return " WHERE " + " AND ".join(clauses)
+    filters = [
+        (f.column, f.type, f.values, getattr(f, "op", "in") or "in")
+        for f in recipe.filters
+    ]
+    # aliases={} → bare columns fall back to default_alias (the source alias);
+    # ``alias.column`` refs are split as usual.
+    return build_where(filters, aliases={}, default_alias=recipe.sourceAlias)
 
 
 def compile_pivot_select(
@@ -322,6 +311,7 @@ def order_limit_sql(
     sort_column: str | None,
     direction: str | None,
     limit: int,
+    offset: int = 0,
 ) -> str:
     order = ""
     if sort_column:
@@ -329,7 +319,8 @@ def order_limit_sql(
         col = sort_column.split(".")[-1] if "." in sort_column else sort_column
         dir_sql = "DESC" if direction == "desc" else "ASC"
         order = f" ORDER BY {quote_ident(col)} {dir_sql} NULLS LAST"
-    return f"{order} LIMIT {int(limit)}"
+    off = max(0, int(offset))
+    return f"{order} LIMIT {int(limit)} OFFSET {off}"
 
 
 def join_targets(recipe: TransformRecipe) -> list[tuple[str, SelectedObjectRef]]:

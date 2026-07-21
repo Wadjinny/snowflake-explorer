@@ -111,6 +111,31 @@ export function clampColumnWidth(width: number): number {
   return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width)))
 }
 
+export function normalizeColumnWidths(
+  value: unknown,
+): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      out[k] = clampColumnWidth(v)
+    }
+  }
+  return out
+}
+
+export function isColumnWidthsRecord(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value) &&
+      Object.values(value as Record<string, unknown>).every(
+        (v) => typeof v === 'number' && Number.isFinite(v),
+      ))
+  )
+}
+
 /** Apply a saved order to a column-name list (unknown names append at end). */
 export function resolveColumnOrder(
   columns: string[],

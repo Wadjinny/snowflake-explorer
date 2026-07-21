@@ -1,10 +1,6 @@
-import {
-  useIsFetching,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
 import { previewObject } from '../api/snowflake'
 import ColumnPicker from '../components/ColumnPicker'
@@ -12,7 +8,7 @@ import DataGrid from '../components/DataGrid'
 import DetailInspector, {
   type GridSelection,
 } from '../components/DetailInspector'
-import ObjectTree from '../components/ObjectTree'
+import ObjectsPanel from '../components/ObjectsPanel'
 import Spinner from '../components/Spinner'
 import TabBar from '../components/TabBar'
 import {
@@ -24,6 +20,7 @@ import {
   TransformIcon,
 } from '../components/TreeIcons'
 import { useConnections } from '../connections'
+import { useDialog } from '../dialog'
 import { useFavorites } from '../favoritesContext'
 import {
   loadTabs,
@@ -38,7 +35,7 @@ import {
 } from '../selections'
 import { useSelections } from '../selectionsContext'
 import { useTransformations } from '../transformationsContext'
-import { TRANSFORM_HOME, transformPath } from '../transformTabs'
+import { transformPath } from '../transformTabs'
 import { useTransformTabs } from '../transformTabsContext'
 import type {
   ColumnFilter,
@@ -65,8 +62,8 @@ function useSelectedFromUrl(): SelectedObject | null {
 }
 
 export default function Explorer() {
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const dialog = useDialog()
   const { active } = useConnections()
   const { isFavorite, toggle: toggleFavorite } = useFavorites()
   const { add: addSelection } = useSelections()
@@ -86,19 +83,6 @@ export default function Explorer() {
 
   const activeKey = urlObject ? objectKeyFrom(urlObject) : null
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null
-
-  const treeFetching = useIsFetching({
-    predicate: (q) => {
-      const key = q.queryKey
-      return (
-        Boolean(active) &&
-        (key[0] === 'databases' ||
-          key[0] === 'schemas' ||
-          key[0] === 'objects') &&
-        key[1] === active?.id
-      )
-    },
-  })
 
   // Load tabs when connection changes
   const prevConnectionId = useRef<string | undefined>(undefined)
@@ -178,13 +162,18 @@ export default function Explorer() {
     navigate(objectPathFrom(sel.object))
   }
 
-  const saveCurrentSelection = () => {
+  const saveCurrentSelection = async () => {
     if (!selected) return
     const suggested = defaultSelectionName(selected, filters, sort)
-    const name = window.prompt('Selection name', suggested)
+    const name = await dialog.prompt({
+      title: 'Save selection',
+      message: 'Name for the Selections list.',
+      defaultValue: suggested,
+      confirmLabel: 'Save',
+    })
     if (name === null) return
     addSelection({
-      name,
+      name: name.trim() || suggested,
       object: selected,
       filters,
       sort,
@@ -206,13 +195,6 @@ export default function Explorer() {
     if (!saved) return
     const tab = openSaved(saved)
     if (tab) navigate(transformPath(tab.id), { state: { autoRun: true } })
-  }
-
-  const refreshTree = () => {
-    if (!active) return
-    void queryClient.invalidateQueries({ queryKey: ['databases', active.id] })
-    void queryClient.invalidateQueries({ queryKey: ['schemas', active.id] })
-    void queryClient.invalidateQueries({ queryKey: ['objects', active.id] })
   }
 
   const syncObjectsCollapsed = () => {
@@ -352,55 +334,14 @@ export default function Explorer() {
         collapsedSize={0}
         onResize={syncObjectsCollapsed}
       >
-        <div className="panel">
-          <div className="panel-header">
-            <span className="panel-title">Objects</span>
-            <div className="panel-header-actions">
-              <span className="btn-micro open">Browse</span>
-              <Link
-                to={TRANSFORM_HOME}
-                className="btn-micro"
-                title="Transform mode"
-              >
-                Transform
-              </Link>
-              {active && treeFetching > 0 ? <Spinner size="sm" /> : null}
-              {active ? (
-                <button
-                  type="button"
-                  className="btn-micro btn-icon"
-                  onClick={refreshTree}
-                  disabled={treeFetching > 0}
-                  title="Refresh catalog"
-                  aria-label="Refresh catalog"
-                >
-                  <RefreshIcon />
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={toggleObjectsPanel}
-                title="Collapse objects panel"
-                aria-label="Collapse objects panel"
-              >
-                <SidebarToggleIcon collapsed={false} />
-              </button>
-            </div>
-          </div>
-          <div className="panel-body">
-            {!active ? (
-              <div className="empty-hint">Add a connection to browse.</div>
-            ) : (
-              <ObjectTree
-                connection={active}
-                selected={selected}
-                onOpenSelection={openSelection}
-                onOpenTransformation={openTransformation}
-              />
-            )}
-          </div>
-        </div>
+        <ObjectsPanel
+          connection={active}
+          mode="browse"
+          selected={selected}
+          onOpenSelection={openSelection}
+          onOpenTransformation={openTransformation}
+          onCollapse={toggleObjectsPanel}
+        />
       </Panel>
       <Separator disabled={objectsCollapsed} />
       <Panel id="data" minSize={200}>

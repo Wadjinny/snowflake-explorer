@@ -25,7 +25,16 @@ type TransformTabsContextValue = {
     patch: Partial<
       Pick<
         OpenTransformTab,
-        'name' | 'recipe' | 'chart' | 'layout' | 'savedId' | 'dirty'
+        | 'name'
+        | 'recipe'
+        | 'chart'
+        | 'layout'
+        | 'columnOrder'
+        | 'columnWidths'
+        | 'pageSize'
+        | 'offset'
+        | 'savedId'
+        | 'dirty'
       >
     >,
   ) => void

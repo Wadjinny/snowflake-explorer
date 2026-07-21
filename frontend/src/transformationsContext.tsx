@@ -23,11 +23,23 @@ type TransformationsContextValue = {
     recipe: TransformRecipe
     chart?: ChartConfig
     layout?: TransformPanelLayout
+    columnOrder?: string[]
+    columnWidths?: Record<string, number>
+    pageSize?: number
   }) => SavedTransformation | null
   update: (
     id: string,
     patch: Partial<
-      Pick<SavedTransformation, 'name' | 'recipe' | 'chart' | 'layout'>
+      Pick<
+        SavedTransformation,
+        | 'name'
+        | 'recipe'
+        | 'chart'
+        | 'layout'
+        | 'columnOrder'
+        | 'columnWidths'
+        | 'pageSize'
+      >
     >,
   ) => void
   remove: (id: string) => void
@@ -79,6 +91,13 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
           ...(patch.recipe !== undefined ? { recipe: patch.recipe } : {}),
           ...(patch.chart !== undefined ? { chart: patch.chart } : {}),
           ...(patch.layout !== undefined ? { layout: patch.layout } : {}),
+          ...(patch.columnOrder !== undefined
+            ? { columnOrder: patch.columnOrder }
+            : {}),
+          ...(patch.columnWidths !== undefined
+            ? { columnWidths: patch.columnWidths }
+            : {}),
+          ...(patch.pageSize !== undefined ? { pageSize: patch.pageSize } : {}),
         }
       })
       persist(next)
@@ -110,6 +129,9 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
       recipe: structuredClone(src.recipe),
       chart: structuredClone(src.chart),
       layout: structuredClone(src.layout),
+      columnOrder: [...(src.columnOrder ?? [])],
+      columnWidths: { ...(src.columnWidths ?? {}) },
+      pageSize: src.pageSize ?? 100,
     })
   }
 

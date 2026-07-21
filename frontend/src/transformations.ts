@@ -5,6 +5,10 @@ import type {
   SelectedObject,
   SortSpec,
 } from './types'
+import {
+  isColumnWidthsRecord,
+  normalizeColumnWidths,
+} from './openTabs'
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full'
 
@@ -74,6 +78,23 @@ export type TransformPanelLayout = {
   results: PanelLayoutMap
 }
 
+export type TransformStepId =
+  | 'joins'
+  | 'columns'
+  | 'filters'
+  | 'aggregate'
+  | 'pivot'
+  | 'order'
+
+export const TRANSFORM_STEP_IDS: TransformStepId[] = [
+  'joins',
+  'columns',
+  'filters',
+  'aggregate',
+  'pivot',
+  'order',
+]
+
 export type TransformRecipe = {
   source: SelectedObject
   sourceAlias: string
@@ -85,7 +106,8 @@ export type TransformRecipe = {
   aggregations: Aggregation[]
   pivot: PivotSpec | null
   sort: SortSpec | null
-  limit: number
+  /** Steps present in the builder but skipped when running. */
+  disabledSteps: TransformStepId[]
 }
 
 export type SavedTransformation = {
@@ -94,12 +116,16 @@ export type SavedTransformation = {
   recipe: TransformRecipe
   chart: ChartConfig
   layout: TransformPanelLayout
+  /** Result-table column display order (empty = schema/result order). */
+  columnOrder: string[]
+  /** Result-table column widths (px). */
+  columnWidths: Record<string, number>
+  /** Result pager page size. */
+  pageSize: number
   createdAt: number
 }
 
 export const MAX_JOINS = 5
-export const DEFAULT_TRANSFORM_LIMIT = 500
-export const MAX_TRANSFORM_LIMIT = 5000
 
 function storageKey(connectionId: string): string {
   return `sf-explorer.transformations:${connectionId}`
@@ -289,9 +315,25 @@ function isTransformPanelLayout(value: unknown): value is TransformPanelLayout {
   )
 }
 
+function isTransformStepId(value: unknown): value is TransformStepId {
+  return (
+    typeof value === 'string' &&
+    (TRANSFORM_STEP_IDS as string[]).includes(value)
+  )
+}
+
+function normalizeDisabledSteps(value: unknown): TransformStepId[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isTransformStepId)
+}
+
 function isTransformRecipe(value: unknown): value is TransformRecipe {
   if (!value || typeof value !== 'object') return false
   const r = value as Record<string, unknown>
+  const disabledOk =
+    r.disabledSteps === undefined ||
+    (Array.isArray(r.disabledSteps) &&
+      r.disabledSteps.every((s) => typeof s === 'string'))
   return (
     isSelectedObject(r.source) &&
     typeof r.sourceAlias === 'string' &&
@@ -307,19 +349,30 @@ function isTransformRecipe(value: unknown): value is TransformRecipe {
     r.aggregations.every(isAggregation) &&
     isPivotSpec(r.pivot) &&
     isSortSpec(r.sort) &&
-    typeof r.limit === 'number'
+    disabledOk
   )
 }
 
 function isSavedTransformation(value: unknown): value is SavedTransformation {
   if (!value || typeof value !== 'object') return false
   const t = value as Record<string, unknown>
+  const orderOk =
+    t.columnOrder === undefined ||
+    (Array.isArray(t.columnOrder) &&
+      t.columnOrder.every((c) => typeof c === 'string'))
+  const widthsOk = isColumnWidthsRecord(t.columnWidths)
+  const pageSizeOk =
+    t.pageSize === undefined ||
+    (typeof t.pageSize === 'number' && Number.isFinite(t.pageSize))
   return (
     typeof t.id === 'string' &&
     typeof t.name === 'string' &&
     isTransformRecipe(t.recipe) &&
     isChartConfig(t.chart) &&
     (t.layout === undefined || isTransformPanelLayout(t.layout)) &&
+    orderOk &&
+    widthsOk &&
+    pageSizeOk &&
     typeof t.createdAt === 'number'
   )
 }
@@ -359,7 +412,18 @@ export function makeEmptyRecipe(source: SelectedObject): TransformRecipe {
     aggregations: [],
     pivot: null,
     sort: null,
-    limit: DEFAULT_TRANSFORM_LIMIT,
+    disabledSteps: [],
+  }
+}
+
+/** Drop legacy fields and normalize disabledSteps. */
+export function normalizeRecipe(recipe: TransformRecipe): TransformRecipe {
+  const { limit: _legacy, ...rest } = recipe as TransformRecipe & {
+    limit?: number
+  }
+  return {
+    ...rest,
+    disabledSteps: normalizeDisabledSteps(rest.disabledSteps),
   }
 }
 
@@ -380,13 +444,23 @@ export function makeTransformation(input: {
   recipe: TransformRecipe
   chart?: ChartConfig
   layout?: TransformPanelLayout
+  columnOrder?: string[]
+  columnWidths?: Record<string, number>
+  pageSize?: number
 }): SavedTransformation {
+  const pageSize =
+    typeof input.pageSize === 'number' && Number.isFinite(input.pageSize)
+      ? Math.min(5000, Math.max(1, Math.floor(input.pageSize)))
+      : 100
   return {
     id: crypto.randomUUID(),
     name: input.name?.trim() || defaultTransformName(input.recipe),
     recipe: input.recipe,
     chart: input.chart ?? defaultChartConfig(),
     layout: normalizeTransformLayout(input.layout),
+    columnOrder: Array.isArray(input.columnOrder) ? [...input.columnOrder] : [],
+    columnWidths: normalizeColumnWidths(input.columnWidths),
+    pageSize,
     createdAt: Date.now(),
   }
 }
@@ -423,21 +497,29 @@ function isCompleteJoinOn(cond: {
 /**
  * Drop unfinished joins / ON clauses before sending a recipe to the API.
  * Pydantic rejects empty join column strings; the builder keeps draft rows in UI.
+ * Disabled steps are omitted from the payload when `applyDisabled` is true (default).
  */
 export function prepareRecipeForApi(
   recipe: TransformRecipe,
-  opts: { requireJoinOn?: boolean } = {},
+  opts: { requireJoinOn?: boolean; applyDisabled?: boolean } = {},
 ): TransformRecipe {
   const requireJoinOn = opts.requireJoinOn ?? false
-  const joins = recipe.joins
-    .filter((j) => j.target.name.trim())
-    .map((j) => ({
-      ...j,
-      on: j.on.filter(isCompleteJoinOn),
-    }))
-    .filter((j) => !requireJoinOn || j.on.length > 0)
+  const applyDisabled = opts.applyDisabled ?? true
+  const disabled = new Set(
+    applyDisabled ? normalizeDisabledSteps(recipe.disabledSteps) : [],
+  )
 
-  if (requireJoinOn) {
+  const joins = disabled.has('joins')
+    ? []
+    : recipe.joins
+        .filter((j) => j.target.name.trim())
+        .map((j) => ({
+          ...j,
+          on: j.on.filter(isCompleteJoinOn),
+        }))
+        .filter((j) => !requireJoinOn || j.on.length > 0)
+
+  if (requireJoinOn && !disabled.has('joins')) {
     const incomplete = recipe.joins.filter(
       (j) =>
         j.target.name.trim() &&
@@ -451,7 +533,18 @@ export function prepareRecipeForApi(
     }
   }
 
-  return { ...recipe, joins }
+  return {
+    source: recipe.source,
+    sourceAlias: recipe.sourceAlias,
+    joins,
+    filters: disabled.has('filters') ? [] : recipe.filters,
+    columns: disabled.has('columns') ? [] : recipe.columns,
+    groupBy: disabled.has('aggregate') ? [] : recipe.groupBy,
+    aggregations: disabled.has('aggregate') ? [] : recipe.aggregations,
+    pivot: disabled.has('pivot') ? null : recipe.pivot,
+    sort: disabled.has('order') ? null : recipe.sort,
+    disabledSteps: [],
+  }
 }
 
 export function loadTransformations(
@@ -464,9 +557,16 @@ export function loadTransformations(
     if (!Array.isArray(parsed)) return []
     return parsed.filter(isSavedTransformation).map((t) => ({
       ...t,
+      recipe: normalizeRecipe(t.recipe),
       layout: normalizeTransformLayout(
         (t as SavedTransformation & { layout?: TransformPanelLayout }).layout,
       ),
+      columnOrder: Array.isArray(t.columnOrder) ? t.columnOrder : [],
+      columnWidths: normalizeColumnWidths(t.columnWidths),
+      pageSize:
+        typeof t.pageSize === 'number' && Number.isFinite(t.pageSize)
+          ? Math.min(5000, Math.max(1, Math.floor(t.pageSize)))
+          : 100,
     }))
   } catch {
     return []
