@@ -7,13 +7,17 @@ from snowflake.connector.errors import Error as SnowflakeError
 from deps import get_connection
 from filters import (
     FACETABLE,
+    build_period_facet_sql,
     build_where,
     facet_expr,
+    period_label,
     serialize_facet_value,
 )
 from models import (
     ColumnInfo,
     ColumnType,
+    FacetPeriodRequest,
+    FacetPeriodResult,
     FacetRequest,
     FacetResult,
     FacetValue,
@@ -109,7 +113,9 @@ def preview_object(
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> PreviewResult:
     table = fqn(db, schema, name)
-    where = build_where([(f.column, f.type, f.values) for f in body.filters])
+    where = build_where(
+        [(f.column, f.type, f.values, f.op) for f in body.filters]
+    )
     order = _order_clause(
         body.sort.column if body.sort else None,
         body.sort.direction if body.sort else None,
@@ -189,7 +195,7 @@ def facet_column(
 
     # Scope by other filters; never apply this column's own filter to its facets.
     other = [
-        (f.column, f.type, f.values)
+        (f.column, f.type, f.values, f.op)
         for f in body.filters
         if f.column != column
     ]
@@ -234,4 +240,66 @@ def facet_column(
         limit=body.limit,
         offset=body.offset,
         has_more=has_more,
+    )
+
+
+@router.post(
+    "/databases/{db}/schemas/{schema}/objects/{name}/facet-periods",
+    response_model=FacetPeriodResult,
+)
+def facet_periods(
+    db: str,
+    schema: str,
+    name: str,
+    body: FacetPeriodRequest,
+    cfg: SnowflakeConnection = Depends(get_connection),
+) -> FacetPeriodResult:
+    if body.type not in ("date", "timestamp"):
+        raise HTTPException(
+            status_code=400, detail="Period facets only for date/timestamp"
+        )
+
+    column = body.column
+    expr = facet_expr(column, body.type)
+    table = fqn(db, schema, name)
+
+    other = [
+        (f.column, f.type, f.values, f.op)
+        for f in body.filters
+        if f.column != column
+    ]
+    filter_where = build_where(other)
+    extra = filter_where.removeprefix(" WHERE ") if filter_where else None
+    sql = build_period_facet_sql(
+        table,
+        expr,
+        body.grain,
+        body.parent,
+        clip=body.clip,
+        extra_where=extra,
+    )
+
+    try:
+        _, rows = run_query(cfg, sql)
+    except SnowflakeError as exc:
+        raise _http_snowflake(exc) from exc
+
+    values: list[FacetValue] = []
+    for raw_value, count in rows:
+        token = str(serialize_facet_value(raw_value))
+        # Day values may include time; normalize to YYYY-MM-DD
+        if body.grain == "day" and len(token) >= 10 and token[4] == "-":
+            token = token[:10]
+        try:
+            label = period_label(token) if body.grain != "day" else token
+        except HTTPException:
+            label = token
+        values.append(
+            FacetValue(value=token, label=label, count=int(count))
+        )
+
+    return FacetPeriodResult(
+        values=values,
+        grain=body.grain,
+        parent=body.parent,
     )

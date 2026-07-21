@@ -2,10 +2,12 @@ import type {
   ColumnFilter,
   ColumnInfo,
   Connection,
+  FacetPeriodResult,
   FacetResult,
   FacetableType,
   NameItem,
   ObjectItem,
+  PeriodGrain,
   PreviewResult,
   SortSpec,
 } from '../types'
@@ -134,6 +136,36 @@ export function facetColumn(
         q,
         limit,
         offset,
+        filters,
+      }),
+    },
+  )
+}
+
+export function facetPeriods(
+  connection: Connection,
+  database: string,
+  schema: string,
+  name: string,
+  column: string,
+  type: FacetableType,
+  grain: PeriodGrain,
+  parent: string | null = null,
+  filters: ColumnFilter[] = [],
+  clip: string | null = null,
+): Promise<FacetPeriodResult> {
+  return apiFetch(
+    connection,
+    `/api/databases/${encodeURIComponent(database)}/schemas/${encodeURIComponent(schema)}/objects/${encodeURIComponent(name)}/facet-periods`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        column,
+        type,
+        grain,
+        parent,
+        clip,
         filters,
       }),
     },

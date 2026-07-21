@@ -2,17 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ColumnFilter,
   ColumnInfo,
-  ColumnType,
   Connection,
-  FacetableType,
   PreviewResult,
-  SelectedObject,
 } from '../types'
-import { isFacetable } from '../types'
+import { isFacetable, filterIsActive } from '../types'
 import {
   parseColumnRef,
   type TransformRecipe,
 } from '../transformations'
+import { facetTargetFromRecipe, findProbeColumn } from '../facetTarget'
 import ColumnFilterPopover from './ColumnFilterPopover'
 import { FilterIcon } from './TreeIcons'
 
@@ -27,15 +25,6 @@ type Props = {
   highlightColumn?: string | null
 }
 
-type FacetTarget = {
-  object: SelectedObject
-  /** Bare column name for the facet API. */
-  bareColumn: string
-  /** Qualified / recipe filter key (`t0.col`). */
-  filterKey: string
-  type: FacetableType
-}
-
 export default function ResultTable({
   data,
   connection,
@@ -48,8 +37,12 @@ export default function ResultTable({
   const highlightRef = useRef<HTMLTableCellElement | null>(null)
 
   const filterMap = useMemo(() => {
-    const map = new Map<string, ColumnFilter>()
-    for (const f of recipe.filters) map.set(f.column, f)
+    const map = new Map<string, ColumnFilter[]>()
+    for (const f of recipe.filters) {
+      const list = map.get(f.column)
+      if (list) list.push(f)
+      else map.set(f.column, [f])
+    }
     return map
   }, [recipe.filters])
 
@@ -68,12 +61,13 @@ export default function ResultTable({
     return <div className="empty-hint">No columns</div>
   }
 
-  const applyFilter = (filterKey: string, filter: ColumnFilter | null) => {
-    const next = recipe.filters.filter((f) => f.column !== filterKey)
-    if (filter && filter.values.length > 0) {
-      next.push({ ...filter, column: filterKey })
-    }
-    onFiltersChange(next)
+  const applyColumnFilters = (filterKey: string, next: ColumnFilter[]) => {
+    onFiltersChange([
+      ...recipe.filters.filter((f) => f.column !== filterKey),
+      ...next
+        .filter(filterIsActive)
+        .map((f) => ({ ...f, column: filterKey })),
+    ])
   }
 
   return (
@@ -83,7 +77,7 @@ export default function ResultTable({
           <tr>
             <th className="th-cell th-rownum">#</th>
             {data.columns.map((col) => {
-              const target = resolveFacetTarget(
+              const target = facetTargetFromRecipe(
                 col.name,
                 col.type,
                 recipe,
@@ -91,33 +85,35 @@ export default function ResultTable({
               )
               const canFilter =
                 target != null && isFacetable(target.type)
-              const applied =
-                target != null
-                  ? (filterMap.get(target.filterKey)?.values ?? [])
-                  : []
-              const active = applied.length > 0
+              const appliedFilters =
+                target != null ? (filterMap.get(target.filterKey) ?? []) : []
+              const active = appliedFilters.some(filterIsActive)
               const isOpen = openColumn === col.name
 
               // Filters on the same physical table, bare names for facet API.
               const tableFilters: ColumnFilter[] =
                 target == null
                   ? []
-                  : recipe.filters
-                      .map((f) => {
-                        const { alias, column } = parseColumnRef(
-                          f.column,
-                          recipe.sourceAlias,
-                        )
-                        if (alias !== parseColumnRef(target.filterKey, recipe.sourceAlias).alias) {
-                          return null
-                        }
-                        return {
-                          column,
-                          type: f.type,
-                          values: f.values,
-                        } satisfies ColumnFilter
-                      })
-                      .filter((f): f is ColumnFilter => f != null)
+                  : recipe.filters.flatMap((f) => {
+                      const { alias, column } = parseColumnRef(
+                        f.column,
+                        recipe.sourceAlias,
+                      )
+                      if (
+                        alias !==
+                        parseColumnRef(target.filterKey, recipe.sourceAlias)
+                          .alias
+                      ) {
+                        return []
+                      }
+                      const next: ColumnFilter = {
+                        column,
+                        type: f.type,
+                        values: f.values,
+                      }
+                      if (f.op) next.op = f.op
+                      return [next]
+                    })
 
               const highlighted = columnMatchesHighlight(
                 col.name,
@@ -159,9 +155,14 @@ export default function ResultTable({
                       table={target.object.name}
                       column={target.bareColumn}
                       type={target.type}
-                      applied={applied}
+                      appliedFilters={appliedFilters.map((f) => ({
+                        ...f,
+                        column: target.bareColumn,
+                      }))}
                       filters={tableFilters}
-                      onApply={(f) => applyFilter(target.filterKey, f)}
+                      onApply={(next) =>
+                        applyColumnFilters(target.filterKey, next)
+                      }
                       onClose={() => setOpenColumn(null)}
                     />
                   ) : null}
@@ -259,77 +260,9 @@ function HeaderFilterButton({
   )
 }
 
-function resolveFacetTarget(
-  resultName: string,
-  resultType: ColumnType,
-  recipe: TransformRecipe,
-  probeColumns: ColumnInfo[],
-): FacetTarget | null {
-  const probe = findProbeColumn(probeColumns, resultName, recipe.sourceAlias)
-  if (!probe || !isFacetable(probe.type)) {
-    if (!isFacetable(resultType)) return null
-    // Fallback: treat as source column with bare name.
-    return {
-      object: recipe.source,
-      bareColumn: resultName,
-      filterKey: `${recipe.sourceAlias}.${resultName}`,
-      type: resultType,
-    }
-  }
-
-  const { alias, column } = parseColumnRef(probe.name, recipe.sourceAlias)
-  const object = objectForAlias(recipe, alias)
-  if (!object?.name || !isFacetable(probe.type)) return null
-
-  return {
-    object,
-    bareColumn: column,
-    filterKey: probe.name.includes('.')
-      ? probe.name
-      : `${alias}.${column}`,
-    type: probe.type,
-  }
-}
-
-function findProbeColumn(
-  cols: ColumnInfo[],
-  resultName: string,
-  sourceAlias: string,
-): ColumnInfo | null {
-  const exact = cols.find((c) => c.name === resultName)
-  if (exact) return exact
-
-  const byBare = cols.filter(
-    (c) => parseColumnRef(c.name, sourceAlias).column === resultName,
-  )
-  if (byBare.length === 1) return byBare[0]!
-  if (byBare.length > 1) {
-    return (
-      byBare.find(
-        (c) => parseColumnRef(c.name, sourceAlias).alias === sourceAlias,
-      ) ?? byBare[0]!
-    )
-  }
-
-  const disambiguated = cols.find((c) => {
-    const { alias, column } = parseColumnRef(c.name, sourceAlias)
-    return `${alias}_${column}` === resultName
-  })
-  return disambiguated ?? null
-}
-
-function objectForAlias(
-  recipe: TransformRecipe,
-  alias: string,
-): SelectedObject | null {
-  if (alias === recipe.sourceAlias) return recipe.source
-  const join = recipe.joins.find((j) => j.alias === alias)
-  return join?.target ?? null
-}
-
 function formatCell(
   cell: string | number | boolean,
-  type: ColumnType,
+  type: import('../types').ColumnType,
 ): string {
   if (type === 'boolean') {
     return cell === true || cell === 'true' || cell === 1 ? 'true' : 'false'

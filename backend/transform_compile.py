@@ -246,7 +246,9 @@ def _build_qualified_where(recipe: TransformRecipe) -> str:
             alias, _, col = f.column.partition(".")
         else:
             alias, col = recipe.sourceAlias, f.column
-        clause = build_filter_clause(col, f.type, f.values, alias=alias)
+        clause = build_filter_clause(
+            col, f.type, f.values, alias=alias, op=getattr(f, "op", "in") or "in"
+        )
         if clause:
             clauses.append(clause)
     if not clauses:

@@ -61,7 +61,7 @@ Run from `backend/`:
 - API client: `frontend/src/api/snowflake.ts` attaches `X-Snowflake-Connection` (base64url JSON of account/user/password/warehouse/role).
 - Backend parses the header in `backend/deps.py`. Do not store credentials on the server.
 - Backend caches live Snowflake sessions in `snowflake_client.ConnectionPool`, keyed by `sha256` of the credential fields, TTL **2 hours**. Concurrent use of the same session is serialized with a per-key lock; dead sessions are invalidated and retried once.
-- Column filters (string / number / date / timestamp): facet values via `GET .../facet` (top frequent, page size 10); preview via `POST .../preview` with `filters` → SQL `IN` / `IS NULL`. Timestamps are faceted/filtered by calendar day.
+- Column filters (string / number / date / timestamp): facet values via `GET .../facet` (top frequent, page size 10); preview via `POST .../preview` with `filters` → SQL `IN` / `IS NULL` (and string conditions / number `gt`·`lt`·`between`). Timestamps are faceted/filtered by calendar day.
 - Preview also accepts `sort: { column, direction }` and returns `total` (COUNT with same filters). Header click cycles asc → desc → clear.
 
 ### Routing (React Router — data mode)

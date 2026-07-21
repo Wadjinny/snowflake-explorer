@@ -36,6 +36,7 @@ import {
   defaultTransformLayout,
   defaultTransformName,
   normalizeTransformLayout,
+  prepareRecipeForApi,
   type ChartConfig,
   type TransformPanelLayout,
   type TransformRecipe,
@@ -138,11 +139,11 @@ export default function TransformWorkspace() {
     ],
     queryFn: () => {
       if (!active || !recipe) throw new Error('No recipe')
-      const probeRecipe = {
-        ...recipe,
-        joins: recipe.joins.filter((j) => j.target.name.trim()),
-      }
-      return probeTransformColumns(active, probeRecipe)
+      // Include named join targets even without ON (for column pickers).
+      return probeTransformColumns(
+        active,
+        prepareRecipeForApi(recipe, { requireJoinOn: false }),
+      )
     },
     enabled: Boolean(active && recipe && recipe.source.name),
   })
@@ -150,7 +151,10 @@ export default function TransformWorkspace() {
   const runMut = useMutation({
     mutationFn: async () => {
       if (!active || !recipe) throw new Error('No recipe')
-      return runTransform(active, recipe)
+      return runTransform(
+        active,
+        prepareRecipeForApi(recipe, { requireJoinOn: true }),
+      )
     },
     onSuccess: (data) => {
       setResult(data)
@@ -285,27 +289,6 @@ export default function TransformWorkspace() {
         state: { autoRun: true } satisfies TransformLocationState,
       })
     }
-  }
-
-  const changeSource = () => {
-    if (!tab) return
-    const db = window.prompt('Database', tab.recipe.source.database)
-    if (db === null) return
-    const schema = window.prompt('Schema', tab.recipe.source.schema)
-    if (schema === null) return
-    const name = window.prompt('Table / view', tab.recipe.source.name)
-    if (name === null) return
-    const kind =
-      window.prompt('Kind (table|view)', tab.recipe.source.kind) ?? 'table'
-    setRecipe({
-      ...tab.recipe,
-      source: {
-        database: db.trim(),
-        schema: schema.trim(),
-        name: name.trim(),
-        kind: kind.trim() === 'view' ? 'view' : 'table',
-      },
-    })
   }
 
   const onRename = () => {
@@ -730,13 +713,13 @@ export default function TransformWorkspace() {
                       <Spinner size="md" label="Loading columns…" block />
                     </div>
                   ) : (
-                    <TransformBuilder
-                      recipe={recipe!}
-                      columns={columnsQuery.data ?? []}
-                      onChange={setRecipe}
-                      onPickSource={changeSource}
-                      onHoverColumn={setHoverColumn}
-                    />
+                  <TransformBuilder
+                    recipe={recipe!}
+                    columns={columnsQuery.data ?? []}
+                    connection={active!}
+                    onChange={setRecipe}
+                    onHoverColumn={setHoverColumn}
+                  />
                   )}
                 </div>
               </div>

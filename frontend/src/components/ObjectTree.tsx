@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { listDatabases, listObjects, listSchemas } from '../api/snowflake'
 import {
@@ -125,6 +125,8 @@ export default function ObjectTree({
   const [sections, setSections] = useState<TreeSections>(loadTreeSections)
   const [favoritesFoldEpoch, setFavoritesFoldEpoch] = useState(0)
   const [catalogFoldEpoch, setCatalogFoldEpoch] = useState(0)
+  const [catalogQ, setCatalogQ] = useState('')
+  const catalogNeedle = catalogQ.trim().toLowerCase()
 
   const setSection = (key: keyof TreeSections, open: boolean) => {
     setSections((prev) => {
@@ -170,6 +172,16 @@ export default function ObjectTree({
   const showFavorites = favorites.length > 0
   const showSelections = selections.length > 0
   const showTransformations = transformations.length > 0
+
+  // Prefer DB name matches; otherwise keep full catalog (search applies deeper).
+  const catalogDbs = catalogNeedle
+    ? (() => {
+        const byName = items.filter((d) =>
+          d.name.toLowerCase().includes(catalogNeedle),
+        )
+        return byName.length > 0 ? byName : items
+      })()
+    : items
 
   return (
     <div className="tree" role="tree">
@@ -233,25 +245,53 @@ export default function ObjectTree({
         open={sections.catalogOpen}
         onToggle={() => setSection('catalogOpen', !sections.catalogOpen)}
         onFoldAll={() => setCatalogFoldEpoch((n) => n + 1)}
-        count={items.length}
+        count={catalogDbs.length}
         divider={showFavorites || showSelections || showTransformations}
       >
         {items.length === 0 ? (
           <div className="empty-hint">No databases</div>
         ) : (
-          items.map((db, i) => (
-            <DatabaseNode
-              key={db.name}
-              connection={connection}
-              database={db.name}
-              selected={selected}
-              isLast={i === items.length - 1}
-              rails={[]}
-              defaultOpen={selected?.database === db.name}
-              favFns={favFns}
-              foldEpoch={catalogFoldEpoch}
-            />
-          ))
+          <>
+            <div className="tree-catalog-search">
+              <input
+                className="input tree-catalog-search-input"
+                type="search"
+                value={catalogQ}
+                onChange={(e) => setCatalogQ(e.target.value)}
+                placeholder="Filter databases, schemas, tables…"
+                aria-label="Filter catalog"
+              />
+              {catalogQ ? (
+                <button
+                  type="button"
+                  className="btn-micro btn-icon tree-catalog-search-clear"
+                  onClick={() => setCatalogQ('')}
+                  title="Clear filter"
+                  aria-label="Clear filter"
+                >
+                  <CloseIcon />
+                </button>
+              ) : null}
+            </div>
+            {catalogDbs.length === 0 ? (
+              <div className="empty-hint">No matching databases</div>
+            ) : (
+              catalogDbs.map((db, i) => (
+                <DatabaseNode
+                  key={db.name}
+                  connection={connection}
+                  database={db.name}
+                  selected={selected}
+                  isLast={i === catalogDbs.length - 1}
+                  rails={[]}
+                  defaultOpen={selected?.database === db.name}
+                  nameFilter={catalogNeedle}
+                  favFns={favFns}
+                  foldEpoch={catalogFoldEpoch}
+                />
+              ))
+            )}
+          </>
         )}
       </TreeSection>
     </div>
@@ -601,6 +641,7 @@ function FavoriteSchemaBranch({
 
   return (
     <SyntheticSchemaNode
+      connection={connection}
       database={database}
       node={node}
       selected={selected}
@@ -613,6 +654,7 @@ function FavoriteSchemaBranch({
 }
 
 function SyntheticSchemaNode({
+  connection,
   database,
   node,
   selected,
@@ -621,6 +663,7 @@ function SyntheticSchemaNode({
   favFns,
   foldEpoch,
 }: {
+  connection: Connection
   database: string
   node: FavoriteSchemaNode
   selected: SelectedObject | null
@@ -633,6 +676,16 @@ function SyntheticSchemaNode({
   const [open, setOpen] = useState(true)
   useCollapseOnFold(foldEpoch, setOpen)
   const objects = node.objects
+
+  // Same catalog probe as SchemaNode so favorite leaves get row counts.
+  const catalog = useQuery({
+    queryKey: ['objects', connection.id, database, node.schema],
+    queryFn: () => listObjects(connection, database, node.schema),
+    enabled: open,
+  })
+  const byName = new Map(
+    (catalog.data ?? []).map((o) => [o.name, o] as const),
+  )
 
   return (
     <div role="group">
@@ -648,22 +701,30 @@ function SyntheticSchemaNode({
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open
-        ? objects.map((obj, i) => (
-            <ObjectRow
-              key={`${obj.objectKind}:${obj.name}`}
-              database={database}
-              schema={node.schema}
-              object={{ name: obj.name, kind: obj.objectKind }}
-              active={
-                selected?.database === database &&
-                selected?.schema === node.schema &&
-                selected?.name === obj.name
-              }
-              isLast={i === objects.length - 1}
-              rails={childRails(rails, isLast)}
-              favFns={favFns}
-            />
-          ))
+        ? objects.map((obj, i) => {
+            const fromCatalog = byName.get(obj.name)
+            const object: ObjectItem = {
+              name: obj.name,
+              kind: obj.objectKind,
+              row_count: fromCatalog?.row_count ?? null,
+            }
+            return (
+              <ObjectRow
+                key={`${obj.objectKind}:${obj.name}`}
+                database={database}
+                schema={node.schema}
+                object={object}
+                active={
+                  selected?.database === database &&
+                  selected?.schema === node.schema &&
+                  selected?.name === obj.name
+                }
+                isLast={i === objects.length - 1}
+                rails={childRails(rails, isLast)}
+                favFns={favFns}
+              />
+            )
+          })
         : null}
     </div>
   )
@@ -814,6 +875,7 @@ function DatabaseNode({
   isLast,
   rails,
   defaultOpen,
+  nameFilter = '',
   favFns,
   foldEpoch,
 }: {
@@ -823,12 +885,16 @@ function DatabaseNode({
   isLast: boolean
   rails: Rails
   defaultOpen: boolean
+  nameFilter?: string
   favFns: FavFns
   foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'database', database }
   const inPath = selected?.database === database
-  const [open, setOpen] = useState(() => defaultOpen || inPath)
+  const nameMatch = Boolean(
+    nameFilter && database.toLowerCase().includes(nameFilter),
+  )
+  const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
   useCollapseOnFold(foldEpoch, setOpen)
   const schemas = useQuery({
     queryKey: ['schemas', connection.id, database],
@@ -841,7 +907,19 @@ function DatabaseNode({
     if (selected?.database === database) setOpen(true)
   }, [selected?.database, database])
 
-  const children = schemas.data ?? []
+  useEffect(() => {
+    if (nameMatch) setOpen(true)
+  }, [nameMatch])
+
+  const allSchemas = schemas.data ?? []
+  const children = useMemo(() => {
+    if (!nameFilter) return allSchemas
+    const byName = allSchemas.filter((s) =>
+      s.name.toLowerCase().includes(nameFilter),
+    )
+    // Prefer schema name matches; otherwise keep all (search applies to tables).
+    return byName.length > 0 ? byName : allSchemas
+  }, [allSchemas, nameFilter])
 
   return (
     <div role="group">
@@ -885,6 +963,7 @@ function DatabaseNode({
                 selected?.database === database &&
                 selected?.schema === schema.name
               }
+              nameFilter={nameFilter}
               favFns={favFns}
               foldEpoch={foldEpoch}
             />
@@ -903,6 +982,7 @@ function SchemaNode({
   isLast,
   rails,
   defaultOpen,
+  nameFilter = '',
   favFns,
   foldEpoch,
 }: {
@@ -913,13 +993,17 @@ function SchemaNode({
   isLast: boolean
   rails: Rails
   defaultOpen: boolean
+  nameFilter?: string
   favFns: FavFns
   foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'schema', database, schema }
   const inPath =
     selected?.database === database && selected?.schema === schema
-  const [open, setOpen] = useState(() => defaultOpen || inPath)
+  const nameMatch = Boolean(
+    nameFilter && schema.toLowerCase().includes(nameFilter),
+  )
+  const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
   useCollapseOnFold(foldEpoch, setOpen)
   const objects = useQuery({
     queryKey: ['objects', connection.id, database, schema],
@@ -933,7 +1017,17 @@ function SchemaNode({
     }
   }, [selected?.database, selected?.schema, database, schema])
 
-  const children = objects.data ?? []
+  useEffect(() => {
+    if (nameMatch) setOpen(true)
+  }, [nameMatch])
+
+  const allObjects = objects.data ?? []
+  const children = useMemo(() => {
+    if (!nameFilter) return allObjects
+    return allObjects.filter((o) =>
+      o.name.toLowerCase().includes(nameFilter),
+    )
+  }, [allObjects, nameFilter])
 
   return (
     <div role="group">
@@ -964,7 +1058,9 @@ function SchemaNode({
         ) : children.length === 0 ? (
           <TreeStatus
             rails={childRails(rails, isLast)}
-            label="No tables or views"
+            label={
+              nameFilter ? 'No matching tables / views' : 'No tables or views'
+            }
           />
         ) : (
           children.map((obj, i) => (

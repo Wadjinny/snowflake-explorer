@@ -21,7 +21,7 @@ import type {
   PreviewResult,
   SortSpec,
 } from '../types'
-import { isFacetable } from '../types'
+import { isFacetable, filterIsActive } from '../types'
 import ColumnFilterPopover from './ColumnFilterPopover'
 import type { GridSelection } from './DetailInspector'
 import { FilterIcon } from './TreeIcons'
@@ -243,13 +243,15 @@ export default function DataGrid({
     return <div className="empty-hint">No columns</div>
   }
 
-  const filterMap = new Map(filters.map((f) => [f.column, f]))
+  const colFilters = (column: string) =>
+    filters.filter((f) => f.column === column)
   const allNames = data.columns.map((c) => c.name)
 
-  const applyFilter = (column: string, filter: ColumnFilter | null) => {
-    const next = filters.filter((f) => f.column !== column)
-    if (filter && filter.values.length > 0) next.push(filter)
-    onFiltersChange(next)
+  const applyColumnFilters = (column: string, next: ColumnFilter[]) => {
+    onFiltersChange([
+      ...filters.filter((f) => f.column !== column),
+      ...next.filter(filterIsActive).map((f) => ({ ...f, column })),
+    ])
   }
 
   const cycleSort = (column: string) => {
@@ -378,8 +380,8 @@ export default function DataGrid({
               #
             </th>
             {visible.map(({ col }) => {
-              const active = filterMap.has(col.name)
-              const applied = filterMap.get(col.name)?.values ?? []
+              const appliedFilters = colFilters(col.name)
+              const active = appliedFilters.some(filterIsActive)
               const isOpen = openColumn === col.name
               const canFilter = isFacetable(col.type)
               const sortDir =
@@ -458,9 +460,9 @@ export default function DataGrid({
                       table={table}
                       column={col.name}
                       type={col.type}
-                      applied={applied}
+                      appliedFilters={appliedFilters}
                       filters={filters}
-                      onApply={(f) => applyFilter(col.name, f)}
+                      onApply={(next) => applyColumnFilters(col.name, next)}
                       onClose={() => setOpenColumn(null)}
                     />
                   ) : null}

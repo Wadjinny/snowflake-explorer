@@ -49,12 +49,26 @@ class PreviewResult(BaseModel):
 
 FacetableType = Literal["string", "number", "date", "timestamp"]
 SortDirection = Literal["asc", "desc"]
+FilterOp = Literal[
+    "in",
+    "is_null",
+    "is_not_null",
+    "is_empty",
+    "is_not_empty",
+    "has",
+    "startswith",
+    "endswith",
+    "gt",
+    "lt",
+    "between",
+]
 
 
 class ColumnFilter(BaseModel):
     column: str = Field(min_length=1)
     type: FacetableType
     values: list[Any] = Field(default_factory=list)
+    op: FilterOp = "in"
 
 
 class SortSpec(BaseModel):
@@ -90,6 +104,25 @@ class FacetResult(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+PeriodGrain = Literal["year", "month", "week", "day"]
+
+
+class FacetPeriodRequest(BaseModel):
+    column: str = Field(min_length=1)
+    type: FacetableType
+    grain: PeriodGrain
+    parent: str | None = None
+    """When listing days under a week reached via a month, clip to that month."""
+    clip: str | None = None
+    filters: list[ColumnFilter] = Field(default_factory=list)
+
+
+class FacetPeriodResult(BaseModel):
+    values: list[FacetValue]
+    grain: PeriodGrain
+    parent: str | None = None
 
 
 class OkResponse(BaseModel):

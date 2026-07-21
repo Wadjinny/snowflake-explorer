@@ -5,6 +5,7 @@ import type {
   SelectedObject,
   SortSpec,
 } from './types'
+import { filterIsActive } from './types'
 
 export type SavedSelection = {
   id: string
@@ -36,6 +37,23 @@ function isFilterValue(value: unknown): value is FilterValue {
   )
 }
 
+function isFilterOp(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === 'in' ||
+    value === 'is_null' ||
+    value === 'is_not_null' ||
+    value === 'is_empty' ||
+    value === 'is_not_empty' ||
+    value === 'has' ||
+    value === 'startswith' ||
+    value === 'endswith' ||
+    value === 'gt' ||
+    value === 'lt' ||
+    value === 'between'
+  )
+}
+
 function isColumnFilter(value: unknown): value is ColumnFilter {
   if (!value || typeof value !== 'object') return false
   const f = value as Record<string, unknown>
@@ -46,7 +64,8 @@ function isColumnFilter(value: unknown): value is ColumnFilter {
       f.type === 'date' ||
       f.type === 'timestamp') &&
     Array.isArray(f.values) &&
-    f.values.every(isFilterValue)
+    f.values.every(isFilterValue) &&
+    isFilterOp(f.op)
   )
 }
 
@@ -135,7 +154,7 @@ export function defaultSelectionName(
   filters: ColumnFilter[],
   sort: SortSpec | null,
 ): string {
-  const filterCount = filters.reduce((n, f) => n + f.values.length, 0)
+  const filterCount = filters.filter(filterIsActive).length
   const parts = [object.name]
   if (filterCount > 0)
     parts.push(`${filterCount} filter${filterCount === 1 ? '' : 's'}`)
@@ -170,5 +189,5 @@ export function makeSelection(input: {
 }
 
 export function selectionFilterCount(sel: SavedSelection): number {
-  return sel.filters.reduce((n, f) => n + f.values.length, 0)
+  return sel.filters.filter(filterIsActive).length
 }

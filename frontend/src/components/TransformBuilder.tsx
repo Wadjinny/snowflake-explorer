@@ -1,12 +1,12 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type {
   ColumnInfo,
   ColumnFilter,
+  Connection,
   FacetableType,
-  SelectedObject,
   SortDirection,
 } from '../types'
-import { isFacetable } from '../types'
+import { isFacetable, filterChipLabels, filterIsActive } from '../types'
 import { objectTitle } from '../paths'
 import {
   DEFAULT_TRANSFORM_LIMIT,
@@ -19,13 +19,17 @@ import {
   type TransformJoin,
   type TransformRecipe,
 } from '../transformations'
-import { CloseIcon } from './TreeIcons'
+import { facetTargetFromRecipe } from '../facetTarget'
+import ColumnFilterPopover from './ColumnFilterPopover'
+import ColumnSelect from './ColumnSelect'
+import TablePicker from './TablePicker'
+import { CloseIcon, FilterIcon } from './TreeIcons'
 
 type Props = {
   recipe: TransformRecipe
   columns: ColumnInfo[]
+  connection: Connection
   onChange: (recipe: TransformRecipe) => void
-  onPickSource?: () => void
   onHoverColumn?: (columnRef: string | null) => void
 }
 
@@ -130,11 +134,13 @@ function orderColumnOptions(
 export default function TransformBuilder({
   recipe,
   columns,
+  connection,
   onChange,
-  onPickSource,
   onHoverColumn,
 }: Props) {
   const [opened, setOpened] = useState<Set<StepId>>(() => new Set())
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
+  const sourcePickRef = useRef<HTMLButtonElement>(null)
   /** Empty `recipe.columns` means all unless this is true (explicit none/partial). */
   const [columnsSelectMode, setColumnsSelectMode] = useState(
     () => recipe.columns.length > 0,
@@ -371,28 +377,58 @@ export default function TransformBuilder({
   }
 
   const aliases = [recipe.sourceAlias, ...recipe.joins.map((j) => j.alias)]
-  const colsForAlias = (alias: string) =>
+  const columnsForAlias = (alias: string) =>
     columns
       .filter((c) => parseColumnRef(c.name).alias === alias)
-      .map((c) => parseColumnRef(c.name).column)
+      .map((c) => ({
+        name: parseColumnRef(c.name).column,
+        type: c.type,
+      }))
 
   const sortOptions = orderColumnOptions(recipe, columns)
+  const sortColumnInfos = sortOptions.map((name) => {
+    const col = columns.find((c) => c.name === name)
+    return { name, type: col?.type }
+  })
   const availableSteps = ALL_STEPS.filter((id) => !active.has(id))
 
   return (
     <div className="transform-builder">
       <StepShell title="Source">
         <div className="tf-source-row">
-          <span className="tf-mono" title={objectTitle(recipe.source)}>
-            {objectTitle(recipe.source)}
-          </span>
-          <span className="kind-badge">{recipe.sourceAlias}</span>
-          {onPickSource ? (
-            <button type="button" className="btn-micro" onClick={onPickSource}>
-              Change
-            </button>
-          ) : null}
+          <button
+            ref={sourcePickRef}
+            type="button"
+            className={`tf-join-pick-btn tf-source-pick${sourcePickerOpen ? ' open' : ''}`}
+            onClick={() => setSourcePickerOpen((v) => !v)}
+            title={objectTitle(recipe.source)}
+            aria-expanded={sourcePickerOpen}
+          >
+            <span className="tf-mono tf-join-fqn">
+              {objectTitle(recipe.source)}
+            </span>
+            <span className="kind-badge">{recipe.sourceAlias}</span>
+          </button>
+          <button
+            type="button"
+            className="btn-micro"
+            onClick={() => setSourcePickerOpen((v) => !v)}
+          >
+            Change
+          </button>
         </div>
+        {sourcePickerOpen ? (
+          <TablePicker
+            connection={connection}
+            value={recipe.source}
+            anchorRef={sourcePickRef}
+            onChange={(source) => {
+              onChange({ ...recipe, source })
+              setSourcePickerOpen(false)
+            }}
+            onClose={() => setSourcePickerOpen(false)}
+          />
+        ) : null}
       </StepShell>
 
       {active.has('joins') ? (
@@ -424,8 +460,9 @@ export default function TransformBuilder({
                 <JoinEditor
                   key={join.id}
                   join={join}
+                  connection={connection}
                   aliases={aliases}
-                  colsForAlias={colsForAlias}
+                  columnsForAlias={columnsForAlias}
                   onChange={(j) => updateJoin(join.id, j)}
                   onRemove={() => removeJoin(join.id)}
                 />
@@ -566,7 +603,20 @@ export default function TransformBuilder({
                   key={i}
                   filter={f}
                   columns={columns}
+                  connection={connection}
+                  recipe={recipe}
+                  allFilters={recipe.filters}
                   onChange={(next) => {
+                    if (Array.isArray(next)) {
+                      const column = f.column
+                      patch({
+                        filters: [
+                          ...recipe.filters.filter((x) => x.column !== column),
+                          ...next,
+                        ],
+                      })
+                      return
+                    }
                     const filters = [...recipe.filters]
                     filters[i] = next
                     patch({ filters })
@@ -606,10 +656,17 @@ export default function TransformBuilder({
             <div className="tf-list tf-list-sm">
               {columns.map((c) => {
                 const on = recipe.groupBy.includes(c.name)
+                const fromColumns =
+                  hasColumnSelection && selectedRefs.has(c.name)
                 return (
                   <label
                     key={c.name}
-                    className={`tf-list-row${on ? ' on' : ''}`}
+                    className={`tf-list-row${on ? ' on' : ''}${fromColumns ? ' from-cols' : ''}`}
+                    title={
+                      fromColumns
+                        ? `${c.name} — selected in Columns`
+                        : c.name
+                    }
                   >
                     <input
                       type="checkbox"
@@ -659,28 +716,24 @@ export default function TransformBuilder({
                       </option>
                     ))}
                   </select>
-                  <select
-                    className="select"
+                  <ColumnSelect
+                    columns={columns}
                     value={agg.column ?? ''}
-                    onChange={(e) =>
+                    emptyOption={{
+                      value: '',
+                      label: agg.fn === 'count' ? '* (all)' : '—',
+                    }}
+                    aria-label="Aggregation column"
+                    onChange={(name) =>
                       patch({
                         aggregations: recipe.aggregations.map((a) =>
                           a.id === agg.id
-                            ? { ...a, column: e.target.value || null }
+                            ? { ...a, column: name || null }
                             : a,
                         ),
                       })
                     }
-                  >
-                    <option value="">
-                      {agg.fn === 'count' ? '* (all)' : '—'}
-                    </option>
-                    {columns.map((c) => (
-                      <option key={c.name} value={c.name}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  />
                   <input
                     className="input"
                     value={agg.alias}
@@ -752,45 +805,35 @@ export default function TransformBuilder({
               </label>
               <label className="tf-field">
                 <span className="tf-label">Pivot col</span>
-                <select
-                  className="select"
+                <ColumnSelect
+                  columns={columns}
                   value={recipe.pivot.pivotColumn}
-                  onChange={(e) =>
+                  aria-label="Pivot column"
+                  onChange={(name) =>
                     patch({
                       pivot: {
                         ...recipe.pivot!,
-                        pivotColumn: e.target.value,
+                        pivotColumn: name,
                       },
                     })
                   }
-                >
-                  {columns.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label className="tf-field">
                 <span className="tf-label">Value col</span>
-                <select
-                  className="select"
+                <ColumnSelect
+                  columns={columns}
                   value={recipe.pivot.valueColumn}
-                  onChange={(e) =>
+                  aria-label="Value column"
+                  onChange={(name) =>
                     patch({
                       pivot: {
                         ...recipe.pivot!,
-                        valueColumn: e.target.value,
+                        valueColumn: name,
                       },
                     })
                   }
-                >
-                  {columns.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label className="tf-field">
                 <span className="tf-label">Agg</span>
@@ -832,28 +875,23 @@ export default function TransformBuilder({
             <div className="tf-order-row">
               <label className="tf-field tf-field-grow">
                 <span className="tf-label">Column</span>
-                <select
-                  className="select"
+                <ColumnSelect
+                  columns={sortColumnInfos}
                   value={
                     recipe.sort && sortOptions.includes(recipe.sort.column)
                       ? recipe.sort.column
                       : (sortOptions[0] ?? '')
                   }
-                  onChange={(e) =>
+                  aria-label="Order by column"
+                  onChange={(name) =>
                     patch({
                       sort: {
-                        column: e.target.value,
+                        column: name,
                         direction: recipe.sort?.direction ?? 'asc',
                       },
                     })
                   }
-                >
-                  {sortOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label className="tf-field">
                 <span className="tf-label">Dir</span>
@@ -974,20 +1012,22 @@ function StepShell({
 
 function JoinEditor({
   join,
+  connection,
   aliases,
-  colsForAlias,
+  columnsForAlias,
   onChange,
   onRemove,
 }: {
   join: TransformJoin
+  connection: Connection
   aliases: string[]
-  colsForAlias: (alias: string) => string[]
+  columnsForAlias: (alias: string) => { name: string; type: ColumnInfo['type'] }[]
   onChange: (j: TransformJoin) => void
   onRemove: () => void
 }) {
-  const setTarget = (patch: Partial<SelectedObject>) => {
-    onChange({ ...join, target: { ...join.target, ...patch } })
-  }
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickRef = useRef<HTMLButtonElement>(null)
+  const hasTable = Boolean(join.target.name.trim())
 
   return (
     <div className="tf-item tf-join">
@@ -1016,36 +1056,38 @@ function JoinEditor({
           <CloseIcon />
         </button>
       </div>
-      <div className="tf-join-target">
-        <input
-          className="input"
-          placeholder="database"
-          value={join.target.database}
-          onChange={(e) => setTarget({ database: e.target.value })}
-        />
-        <input
-          className="input"
-          placeholder="schema"
-          value={join.target.schema}
-          onChange={(e) => setTarget({ schema: e.target.value })}
-        />
-        <input
-          className="input"
-          placeholder="table"
-          value={join.target.name}
-          onChange={(e) => setTarget({ name: e.target.value })}
-        />
-        <select
-          className="select"
-          value={join.target.kind}
-          onChange={(e) =>
-            setTarget({ kind: e.target.value as 'table' | 'view' })
-          }
+
+      <div className="tf-join-target-picker">
+        <button
+          ref={pickRef}
+          type="button"
+          className={`tf-join-pick-btn${pickerOpen ? ' open' : ''}${hasTable ? '' : ' empty'}`}
+          onClick={() => setPickerOpen((v) => !v)}
+          title={hasTable ? objectTitle(join.target) : 'Pick table or view'}
+          aria-expanded={pickerOpen}
         >
-          <option value="table">table</option>
-          <option value="view">view</option>
-        </select>
+          {hasTable ? (
+            <>
+              <span className="tf-mono tf-join-fqn">
+                {objectTitle(join.target)}
+              </span>
+              <span className="kind-badge">{join.target.kind}</span>
+            </>
+          ) : (
+            <span className="tf-muted">Pick table / view…</span>
+          )}
+        </button>
+        {pickerOpen ? (
+          <TablePicker
+            connection={connection}
+            value={join.target}
+            anchorRef={pickRef}
+            onChange={(target) => onChange({ ...join, target })}
+            onClose={() => setPickerOpen(false)}
+          />
+        ) : null}
       </div>
+
       {join.on.map((cond, i) => (
         <div key={i} className="tf-join-on">
           <select
@@ -1053,7 +1095,7 @@ function JoinEditor({
             value={cond.leftAlias}
             onChange={(e) => {
               const on = [...join.on]
-              on[i] = { ...cond, leftAlias: e.target.value }
+              on[i] = { ...cond, leftAlias: e.target.value, leftColumn: '' }
               onChange({ ...join, on })
             }}
           >
@@ -1063,29 +1105,25 @@ function JoinEditor({
               </option>
             ))}
           </select>
-          <select
-            className="select"
+          <ColumnSelect
+            columns={columnsForAlias(cond.leftAlias)}
             value={cond.leftColumn}
-            onChange={(e) => {
+            placeholder="col"
+            incomplete={!cond.leftColumn}
+            aria-label="Left join column"
+            onChange={(name) => {
               const on = [...join.on]
-              on[i] = { ...cond, leftColumn: e.target.value }
+              on[i] = { ...cond, leftColumn: name }
               onChange({ ...join, on })
             }}
-          >
-            <option value="">col</option>
-            {colsForAlias(cond.leftAlias).map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          />
           <span className="tf-muted">=</span>
           <select
             className="select"
             value={cond.rightAlias}
             onChange={(e) => {
               const on = [...join.on]
-              on[i] = { ...cond, rightAlias: e.target.value }
+              on[i] = { ...cond, rightAlias: e.target.value, rightColumn: '' }
               onChange({ ...join, on })
             }}
           >
@@ -1095,22 +1133,32 @@ function JoinEditor({
               </option>
             ))}
           </select>
-          <select
-            className="select"
+          <ColumnSelect
+            columns={columnsForAlias(cond.rightAlias)}
             value={cond.rightColumn}
-            onChange={(e) => {
+            placeholder="col"
+            incomplete={!cond.rightColumn}
+            aria-label="Right join column"
+            onChange={(name) => {
               const on = [...join.on]
-              on[i] = { ...cond, rightColumn: e.target.value }
+              on[i] = { ...cond, rightColumn: name }
               onChange({ ...join, on })
             }}
+          />
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={() =>
+              onChange({
+                ...join,
+                on: join.on.filter((_, j) => j !== i),
+              })
+            }
+            title="Remove ON"
+            aria-label="Remove ON condition"
           >
-            <option value="">col</option>
-            {colsForAlias(cond.rightAlias).map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            <CloseIcon />
+          </button>
         </div>
       ))}
       <button
@@ -1140,74 +1188,131 @@ function JoinEditor({
 function FilterEditor({
   filter,
   columns,
+  connection,
+  recipe,
+  allFilters,
   onChange,
   onRemove,
 }: {
   filter: ColumnFilter
   columns: ColumnInfo[]
-  onChange: (f: ColumnFilter) => void
+  connection: Connection
+  recipe: TransformRecipe
+  allFilters: ColumnFilter[]
+  onChange: (f: ColumnFilter | ColumnFilter[]) => void
   onRemove: () => void
 }) {
+  const [open, setOpen] = useState(false)
+  const editAnchorRef = useRef<HTMLDivElement>(null)
   const facetable = columns.filter((c) => isFacetable(c.type))
+  const colMeta = columns.find((c) => c.name === filter.column)
+  const target = colMeta
+    ? facetTargetFromRecipe(filter.column, colMeta.type, recipe, columns)
+    : null
+
+  const tableFilters: ColumnFilter[] =
+    target == null
+      ? []
+      : allFilters.flatMap((f) => {
+          const { alias, column } = parseColumnRef(
+            f.column,
+            recipe.sourceAlias,
+          )
+          const targetAlias = parseColumnRef(
+            target.filterKey,
+            recipe.sourceAlias,
+          ).alias
+          if (alias !== targetAlias) return []
+          const next: ColumnFilter = {
+            column,
+            type: f.type,
+            values: f.values,
+          }
+          if (f.op) next.op = f.op
+          return [next]
+        })
+
+  const chips = filterChipLabels(filter)
+  const active = filterIsActive(filter)
+  const columnFilters = allFilters.filter((f) => f.column === filter.column)
+
   return (
     <div className="tf-item tf-filter-row">
-      <select
-        className="select"
+      <ColumnSelect
+        columns={facetable}
         value={filter.column}
-        onChange={(e) => {
-          const col = columns.find((c) => c.name === e.target.value)
+        aria-label="Filter column"
+        onChange={(name) => {
+          const col = columns.find((c) => c.name === name)
           if (!col || !isFacetable(col.type)) return
           onChange({
             column: col.name,
             type: col.type,
-            values: filter.values,
+            values: [],
+            op: 'in',
           })
-        }}
-      >
-        {facetable.map((c) => (
-          <option key={c.name} value={c.name}>
-            {c.name}
-          </option>
-        ))}
-      </select>
-      <input
-        className="input"
-        placeholder="values (comma-separated)"
-        value={filter.values
-          .filter((v) => v !== null)
-          .map(String)
-          .join(', ')}
-        onChange={(e) => {
-          const raw = e.target.value
-          const parts = raw
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-          const values: ColumnFilter['values'] = parts.map((p) => {
-            if (filter.type === 'number') {
-              const n = Number(p)
-              return Number.isFinite(n) ? n : p
-            }
-            return p
-          })
-          if (filter.values.includes(null)) values.push(null)
-          onChange({ ...filter, values })
+          setOpen(false)
         }}
       />
-      <label className="tf-check" title="Include NULL">
-        <input
-          type="checkbox"
-          checked={filter.values.includes(null)}
-          onChange={(e) => {
-            const without = filter.values.filter((v) => v !== null)
-            onChange({
-              ...filter,
-              values: e.target.checked ? [...without, null] : without,
-            })
-          }}
-        />
-        null
-      </label>
+
+      <div className="tf-filter-values">
+        {!active ? (
+          <span className="tf-muted">No condition</span>
+        ) : (
+          <div className="tf-filter-chips">
+            {chips.map((label) => (
+              <span key={label} className="tf-filter-chip">
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="tf-filter-edit-wrap" ref={editAnchorRef}>
+        <button
+          type="button"
+          className={`btn-micro btn-icon${open ? ' open' : ''}${active ? ' active' : ''}`}
+          onClick={() => setOpen((v) => !v)}
+          disabled={!target}
+          title="Edit filter"
+          aria-label="Edit filter"
+          aria-expanded={open}
+        >
+          <FilterIcon />
+        </button>
+        {open && target ? (
+          <ColumnFilterPopover
+            connection={connection}
+            database={target.object.database}
+            schema={target.object.schema}
+            table={target.object.name}
+            column={target.bareColumn}
+            type={target.type}
+            appliedFilters={columnFilters.map((f) => ({
+              column: target.bareColumn,
+              type: f.type,
+              values: f.values,
+              op: f.op,
+            }))}
+            filters={tableFilters}
+            anchorRef={editAnchorRef}
+            onApply={(next) => {
+              onChange(
+                next.map((f) => ({
+                  column: filter.column,
+                  type: filter.type,
+                  values: f.values,
+                  op: f.op ?? 'in',
+                })),
+              )
+              setOpen(false)
+            }}
+            onClose={() => setOpen(false)}
+          />
+        ) : null}
+      </div>
+
       <button
         type="button"
         className="btn-micro btn-icon"

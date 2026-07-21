@@ -46,6 +46,7 @@ import type {
   SelectedObject,
   SortSpec,
 } from '../types'
+import { filterIsActive } from '../types'
 
 const PAGE_SIZES = [50, 100, 200, 500]
 
@@ -324,7 +325,7 @@ export default function Explorer() {
   const to = offset + rowCount
   const canPrev = offset > 0
   const canNext = total < 0 ? rowCount >= limit : offset + rowCount < total
-  const filterCount = filters.reduce((n, f) => n + f.values.length, 0)
+  const filterCount = filters.filter(filterIsActive).length
   const totalLabel =
     total < 0 ? '?' : total.toLocaleString()
   const selectedFavorite = selected

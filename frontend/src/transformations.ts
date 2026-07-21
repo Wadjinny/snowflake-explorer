@@ -129,6 +129,23 @@ function isFilterValue(value: unknown): value is FilterValue {
   )
 }
 
+function isFilterOp(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === 'in' ||
+    value === 'is_null' ||
+    value === 'is_not_null' ||
+    value === 'is_empty' ||
+    value === 'is_not_empty' ||
+    value === 'has' ||
+    value === 'startswith' ||
+    value === 'endswith' ||
+    value === 'gt' ||
+    value === 'lt' ||
+    value === 'between'
+  )
+}
+
 function isColumnFilter(value: unknown): value is ColumnFilter {
   if (!value || typeof value !== 'object') return false
   const f = value as Record<string, unknown>
@@ -139,7 +156,8 @@ function isColumnFilter(value: unknown): value is ColumnFilter {
       f.type === 'date' ||
       f.type === 'timestamp') &&
     Array.isArray(f.values) &&
-    f.values.every(isFilterValue)
+    f.values.every(isFilterValue) &&
+    isFilterOp(f.op)
   )
 }
 
@@ -393,6 +411,47 @@ export function parseColumnRef(
 
 export function formatColumnRef(alias: string, column: string): string {
   return `${alias}.${column}`
+}
+
+function isCompleteJoinOn(cond: {
+  leftColumn: string
+  rightColumn: string
+}): boolean {
+  return Boolean(cond.leftColumn.trim() && cond.rightColumn.trim())
+}
+
+/**
+ * Drop unfinished joins / ON clauses before sending a recipe to the API.
+ * Pydantic rejects empty join column strings; the builder keeps draft rows in UI.
+ */
+export function prepareRecipeForApi(
+  recipe: TransformRecipe,
+  opts: { requireJoinOn?: boolean } = {},
+): TransformRecipe {
+  const requireJoinOn = opts.requireJoinOn ?? false
+  const joins = recipe.joins
+    .filter((j) => j.target.name.trim())
+    .map((j) => ({
+      ...j,
+      on: j.on.filter(isCompleteJoinOn),
+    }))
+    .filter((j) => !requireJoinOn || j.on.length > 0)
+
+  if (requireJoinOn) {
+    const incomplete = recipe.joins.filter(
+      (j) =>
+        j.target.name.trim() &&
+        j.on.filter(isCompleteJoinOn).length === 0,
+    )
+    if (incomplete.length > 0) {
+      const aliases = incomplete.map((j) => j.alias).join(', ')
+      throw new Error(
+        `Join ${aliases}: pick both ON columns before running`,
+      )
+    }
+  }
+
+  return { ...recipe, joins }
 }
 
 export function loadTransformations(
