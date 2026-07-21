@@ -1,0 +1,11 @@
+snowflake-explorer.w-ilyas.site {
+	encode gzip
+	handle /api/* {
+		reverse_proxy localhost:1234
+	}
+	handle {
+		root * /home/ubuntu/thinkering/snowflake-explorer
+		try_files {path} /index.html
+		file_server
+	}
+}

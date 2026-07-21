@@ -1,0 +1,10 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.139.0",
+    "snowflake-connector-python>=4.7.1",
+    "uvicorn>=0.51.0",
+]
