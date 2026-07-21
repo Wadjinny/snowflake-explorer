@@ -6,6 +6,7 @@ from routes.catalog import router as catalog_router
 from routes.connection import router as connection_router
 from routes.data import router as data_router
 from routes.health import router as hello_router
+from routes.transform import router as transform_router
 from snowflake_client import pool
 
 
@@ -21,6 +22,7 @@ app.include_router(hello_router)
 app.include_router(connection_router)
 app.include_router(catalog_router)
 app.include_router(data_router)
+app.include_router(transform_router)
 
 
 def main():

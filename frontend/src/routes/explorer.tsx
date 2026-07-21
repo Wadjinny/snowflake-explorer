@@ -1,23 +1,27 @@
 import {
-  keepPreviousData,
   useIsFetching,
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
 import { previewObject } from '../api/snowflake'
 import ColumnPicker from '../components/ColumnPicker'
 import DataGrid from '../components/DataGrid'
+import DetailInspector, {
+  type GridSelection,
+} from '../components/DetailInspector'
 import ObjectTree from '../components/ObjectTree'
 import Spinner from '../components/Spinner'
 import TabBar from '../components/TabBar'
 import {
+  BookmarkIcon,
   ColumnsIcon,
   RefreshIcon,
   SidebarToggleIcon,
   StarIcon,
+  TransformIcon,
 } from '../components/TreeIcons'
 import { useConnections } from '../connections'
 import { useFavorites } from '../favoritesContext'
@@ -28,6 +32,14 @@ import {
   type OpenTab,
 } from '../openTabs'
 import { objectKeyFrom, objectPathFrom, objectTitle } from '../paths'
+import {
+  defaultSelectionName,
+  type SavedSelection,
+} from '../selections'
+import { useSelections } from '../selectionsContext'
+import { useTransformations } from '../transformationsContext'
+import { TRANSFORM_HOME, transformPath } from '../transformTabs'
+import { useTransformTabs } from '../transformTabsContext'
 import type {
   ColumnFilter,
   ObjectKind,
@@ -56,11 +68,20 @@ export default function Explorer() {
   const navigate = useNavigate()
   const { active } = useConnections()
   const { isFavorite, toggle: toggleFavorite } = useFavorites()
+  const { add: addSelection } = useSelections()
+  const { transformations } = useTransformations()
+  const { openDraft, openSaved } = useTransformTabs()
   const urlObject = useSelectedFromUrl()
   const objectsPanelRef = usePanelRef()
   const [objectsCollapsed, setObjectsCollapsed] = useState(false)
   const [tabs, setTabs] = useState<OpenTab[]>([])
   const [columnsOpen, setColumnsOpen] = useState(false)
+  const [hoverColumn, setHoverColumn] = useState<string | null>(null)
+  const [gridSelection, setGridSelection] = useState<GridSelection | null>(
+    null,
+  )
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const inspectorPanelRef = usePanelRef()
 
   const activeKey = urlObject ? objectKeyFrom(urlObject) : null
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null
@@ -135,6 +156,57 @@ export default function Explorer() {
     })
   }
 
+  const openSelection = (sel: SavedSelection) => {
+    const key = objectKeyFrom(sel.object)
+    const tab: OpenTab = {
+      key,
+      object: sel.object,
+      filters: sel.filters,
+      sort: sel.sort,
+      limit: sel.limit,
+      offset: 0,
+      hiddenColumns: sel.hiddenColumns,
+      columnOrder: sel.columnOrder,
+      columnWidths: sel.columnWidths ?? {},
+    }
+    setTabs((prev) => {
+      const exists = prev.some((t) => t.key === key)
+      if (exists) return prev.map((t) => (t.key === key ? tab : t))
+      return [...prev, tab]
+    })
+    navigate(objectPathFrom(sel.object))
+  }
+
+  const saveCurrentSelection = () => {
+    if (!selected) return
+    const suggested = defaultSelectionName(selected, filters, sort)
+    const name = window.prompt('Selection name', suggested)
+    if (name === null) return
+    addSelection({
+      name,
+      object: selected,
+      filters,
+      sort,
+      hiddenColumns,
+      columnOrder,
+      columnWidths,
+      limit,
+    })
+  }
+
+  const newTransform = () => {
+    if (!selected) return
+    const tab = openDraft(selected)
+    if (tab) navigate(transformPath(tab.id))
+  }
+
+  const openTransformation = (savedId: string) => {
+    const saved = transformations.find((t) => t.id === savedId)
+    if (!saved) return
+    const tab = openSaved(saved)
+    if (tab) navigate(transformPath(tab.id), { state: { autoRun: true } })
+  }
+
   const refreshTree = () => {
     if (!active) return
     void queryClient.invalidateQueries({ queryKey: ['databases', active.id] })
@@ -160,10 +232,49 @@ export default function Explorer() {
   const limit = activeTab?.limit ?? 100
   const offset = activeTab?.offset ?? 0
   const hiddenColumns = activeTab?.hiddenColumns ?? []
+  const columnOrder = activeTab?.columnOrder ?? []
+  const columnWidths = activeTab?.columnWidths ?? {}
 
   useEffect(() => {
     setColumnsOpen(false)
+    setHoverColumn(null)
+    setGridSelection(null)
   }, [activeKey])
+
+  const filterKey = JSON.stringify(filters)
+  const sortKey = sort ? `${sort.column}:${sort.direction}` : ''
+  useEffect(() => {
+    setGridSelection(null)
+  }, [offset, limit, sortKey, activeKey, filterKey])
+
+  const onGridSelectionChange = (sel: GridSelection) => {
+    setGridSelection(sel)
+    setInspectorOpen(true)
+    const panel = inspectorPanelRef.current
+    if (panel?.isCollapsed()) panel.expand()
+  }
+
+  const closeInspector = () => {
+    setGridSelection(null)
+    setInspectorOpen(false)
+    inspectorPanelRef.current?.collapse()
+  }
+
+  useEffect(() => {
+    if (!inspectorOpen && !gridSelection) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (columnsOpen) return
+      e.preventDefault()
+      closeInspector()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inspectorOpen, gridSelection, columnsOpen])
+
+  useEffect(() => {
+    if (!columnsOpen) setHoverColumn(null)
+  }, [columnsOpen])
 
   const preview = useQuery({
     queryKey: [
@@ -191,7 +302,20 @@ export default function Explorer() {
       )
     },
     enabled: Boolean(active && selected),
-    placeholderData: keepPreviousData,
+    // Keep prior rows only when paging/filtering the same table — not when switching objects.
+    placeholderData: (previousData, previousQuery) => {
+      const prevKey = previousQuery?.queryKey
+      if (
+        previousData &&
+        prevKey?.[1] === active?.id &&
+        prevKey?.[2] === selected?.database &&
+        prevKey?.[3] === selected?.schema &&
+        prevKey?.[4] === selected?.name
+      ) {
+        return previousData
+      }
+      return undefined
+    },
   })
 
   const rowCount = preview.data?.rows.length ?? 0
@@ -231,6 +355,14 @@ export default function Explorer() {
           <div className="panel-header">
             <span className="panel-title">Objects</span>
             <div className="panel-header-actions">
+              <span className="btn-micro open">Browse</span>
+              <Link
+                to={TRANSFORM_HOME}
+                className="btn-micro"
+                title="Transform mode"
+              >
+                Transform
+              </Link>
               {active && treeFetching > 0 ? <Spinner size="sm" /> : null}
               {active ? (
                 <button
@@ -259,7 +391,12 @@ export default function Explorer() {
             {!active ? (
               <div className="empty-hint">Add a connection to browse.</div>
             ) : (
-              <ObjectTree connection={active} selected={selected} />
+              <ObjectTree
+                connection={active}
+                selected={selected}
+                onOpenSelection={openSelection}
+                onOpenTransformation={openTransformation}
+              />
             )}
           </div>
         </div>
@@ -315,6 +452,28 @@ export default function Explorer() {
             ) : null}
             <div className="panel-header-actions">
               {selected && preview.isFetching ? <Spinner size="sm" /> : null}
+              {selected ? (
+                <button
+                  type="button"
+                  className="btn-micro btn-icon"
+                  onClick={newTransform}
+                  title="New transformation"
+                  aria-label="New transformation"
+                >
+                  <TransformIcon />
+                </button>
+              ) : null}
+              {selected ? (
+                <button
+                  type="button"
+                  className="btn-micro btn-icon"
+                  onClick={saveCurrentSelection}
+                  title="Save selection view"
+                  aria-label="Save selection view"
+                >
+                  <BookmarkIcon />
+                </button>
+              ) : null}
               {preview.data && selected ? (
                 <div className="column-picker-anchor">
                   <button
@@ -331,10 +490,12 @@ export default function Explorer() {
                     <ColumnPicker
                       columns={preview.data.columns}
                       hiddenColumns={hiddenColumns}
+                      columnOrder={columnOrder}
                       onChange={(hidden) =>
                         updateActiveTab({ hiddenColumns: hidden })
                       }
                       onClose={() => setColumnsOpen(false)}
+                      onHoverColumn={setHoverColumn}
                     />
                   ) : null}
                 </div>
@@ -379,76 +540,140 @@ export default function Explorer() {
                     : 'Failed to load preview'}
                 </div>
               ) : null}
-              <div className="panel-body">
-                {preview.isLoading && !preview.data ? (
-                  <div className="empty-hint">
-                    <Spinner size="md" label="Loading rows…" block />
+              <Group
+                orientation="horizontal"
+                style={{ flex: 1, minHeight: 0, width: '100%' }}
+              >
+                <Panel id="grid" minSize={200}>
+                  <div className="panel data-grid-panel">
+                    <div className="panel-body">
+                      {preview.isLoading && !preview.data ? (
+                        <div className="empty-hint">
+                          <Spinner size="md" label="Loading rows…" block />
+                        </div>
+                      ) : preview.data ? (
+                        <DataGrid
+                          data={preview.data}
+                          connection={active}
+                          database={selected.database}
+                          schema={selected.schema}
+                          table={selected.name}
+                          filters={filters}
+                          onFiltersChange={onFiltersChange}
+                          sort={sort}
+                          onSortChange={onSortChange}
+                          hiddenColumns={hiddenColumns}
+                          columnOrder={columnOrder}
+                          onColumnOrderChange={(order) =>
+                            updateActiveTab({ columnOrder: order })
+                          }
+                          columnWidths={columnWidths}
+                          onColumnWidthsChange={(widths) =>
+                            updateActiveTab({ columnWidths: widths })
+                          }
+                          highlightColumn={hoverColumn}
+                          selection={gridSelection}
+                          onSelectionChange={onGridSelectionChange}
+                          rowOffset={offset + 1}
+                        />
+                      ) : null}
+                    </div>
+                    <div className="pager">
+                      <span className="pager-meta">
+                        {preview.isFetching ? <Spinner size="sm" /> : null}
+                        <span>
+                          Rows {from.toLocaleString()}–{to.toLocaleString()} of{' '}
+                          <span className="pager-total">{totalLabel}</span>
+                          {filters.length > 0 ? ' (filtered)' : ''}
+                        </span>
+                      </span>
+                      <div className="toolbar">
+                        <button
+                          type="button"
+                          className="btn-micro"
+                          disabled={!canPrev || preview.isFetching}
+                          onClick={() =>
+                            updateActiveTab({
+                              offset: Math.max(0, offset - limit),
+                            })
+                          }
+                        >
+                          ◀
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-micro"
+                          disabled={!canNext || preview.isFetching}
+                          onClick={() =>
+                            updateActiveTab({ offset: offset + limit })
+                          }
+                        >
+                          ▶
+                        </button>
+                        <select
+                          className="select"
+                          value={limit}
+                          onChange={(e) => {
+                            updateActiveTab({
+                              limit: Number(e.target.value),
+                              offset: 0,
+                            })
+                          }}
+                        >
+                          {PAGE_SIZES.map((size) => (
+                            <option key={size} value={size}>
+                              {size}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
-                ) : preview.data ? (
-                  <DataGrid
-                    data={preview.data}
-                    connection={active}
-                    database={selected.database}
-                    schema={selected.schema}
-                    table={selected.name}
-                    filters={filters}
-                    onFiltersChange={onFiltersChange}
-                    sort={sort}
-                    onSortChange={onSortChange}
-                    hiddenColumns={hiddenColumns}
-                  />
-                ) : null}
-              </div>
-              <div className="pager">
-                <span className="pager-meta">
-                  {preview.isFetching ? <Spinner size="sm" /> : null}
-                  <span>
-                    Rows {from.toLocaleString()}–{to.toLocaleString()} of{' '}
-                    <span className="pager-total">{totalLabel}</span>
-                    {filters.length > 0 ? ' (filtered)' : ''}
-                  </span>
-                </span>
-                <div className="toolbar">
-                  <button
-                    type="button"
-                    className="btn-micro"
-                    disabled={!canPrev || preview.isFetching}
-                    onClick={() =>
-                      updateActiveTab({
-                        offset: Math.max(0, offset - limit),
-                      })
-                    }
-                  >
-                    ◀
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-micro"
-                    disabled={!canNext || preview.isFetching}
-                    onClick={() =>
-                      updateActiveTab({ offset: offset + limit })
-                    }
-                  >
-                    ▶
-                  </button>
-                  <select
-                    className="select"
-                    value={limit}
-                    onChange={(e) => {
-                      updateActiveTab({
-                        limit: Number(e.target.value),
-                        offset: 0,
-                      })
-                    }}
-                  >
-                    {PAGE_SIZES.map((size) => (
-                      <option key={size} value={size}>
-                        {size}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                </Panel>
+                <Separator />
+                <Panel
+                  id="inspector"
+                  panelRef={inspectorPanelRef}
+                  defaultSize={0}
+                  minSize={220}
+                  collapsible
+                  collapsedSize={0}
+                  onResize={() => {
+                    setInspectorOpen(
+                      !(inspectorPanelRef.current?.isCollapsed() ?? true),
+                    )
+                  }}
+                >
+                  {preview.data ? (
+                    <DetailInspector
+                      data={preview.data}
+                      selection={gridSelection}
+                      rowNumber={
+                        gridSelection
+                          ? offset + 1 + gridSelection.rowIndex
+                          : null
+                      }
+                      onSelectColumn={(column) => {
+                        if (!gridSelection) return
+                        onGridSelectionChange({
+                          ...gridSelection,
+                          column,
+                        })
+                      }}
+                      onClose={closeInspector}
+                    />
+                  ) : (
+                    <div className="panel">
+                      <div className="panel-header">
+                        <span className="panel-title">Inspector</span>
+                      </div>
+                      <div className="panel-body">
+                        <div className="empty-hint">No data</div>
+                      </div>
+                    </div>
+                  )}
+                </Panel>
+              </Group>
             </>
           )}
         </div>

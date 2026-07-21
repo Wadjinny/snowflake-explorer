@@ -17,6 +17,24 @@ export type ObjectKind = 'table' | 'view'
 export type ObjectItem = {
   name: string
   kind: ObjectKind
+  /** Table metadata row count; null/undefined for views. */
+  row_count?: number | null
+}
+
+/** Compact count: 999 → 999, 1200 → 1.2k, 3_400_000 → 3.4M */
+export function formatShortCount(n: number): string {
+  const abs = Math.abs(n)
+  if (abs < 1000) return String(n)
+  if (abs < 1_000_000) {
+    const v = n / 1000
+    return `${Number.isInteger(v) ? v : v.toFixed(1).replace(/\.0$/, '')}k`
+  }
+  if (abs < 1_000_000_000) {
+    const v = n / 1_000_000
+    return `${Number.isInteger(v) ? v : v.toFixed(1).replace(/\.0$/, '')}M`
+  }
+  const v = n / 1_000_000_000
+  return `${Number.isInteger(v) ? v : v.toFixed(1).replace(/\.0$/, '')}B`
 }
 
 export type ColumnType =

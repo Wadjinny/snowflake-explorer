@@ -3,40 +3,136 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { listDatabases, listObjects, listSchemas } from '../api/snowflake'
 import {
-  favoriteLabel,
-  favoriteTitle,
+  buildFavoriteForest,
   type Favorite,
-  type RevealPath,
+  type FavoriteDatabaseNode,
+  type FavoriteSchemaNode,
 } from '../favorites'
 import { useFavorites } from '../favoritesContext'
 import { objectPath } from '../paths'
+import {
+  selectionFilterCount,
+  type SavedSelection,
+} from '../selections'
+import { useSelections } from '../selectionsContext'
+import type { SavedTransformation } from '../transformations'
+import { useTransformations } from '../transformationsContext'
 import type {
   Connection,
   ObjectItem,
   ObjectKind,
   SelectedObject,
 } from '../types'
+import { formatShortCount } from '../types'
 import Spinner from './Spinner'
 import {
+  BookmarkIcon,
   ChevronIcon,
+  CloseIcon,
   DatabaseIcon,
+  FoldAllIcon,
   FolderIcon,
   StarIcon,
   TableIcon,
+  TransformIcon,
   ViewIcon,
 } from './TreeIcons'
 
 type Props = {
   connection: Connection
   selected: SelectedObject | null
+  onOpenSelection: (selection: SavedSelection) => void
+  activeTransformId?: string | null
+  onOpenTransformation?: (id: string) => void
 }
 
 /** Ancestor “still has more siblings” flags for guide rails (depth-1 entries). */
 type Rails = boolean[]
 
-export default function ObjectTree({ connection, selected }: Props) {
+type FavFns = {
+  isFavorite: (fav: Favorite) => boolean
+  onToggleFavorite: (fav: Favorite) => void
+}
+
+const SECTIONS_KEY = 'sf-explorer.treeSections'
+
+type TreeSections = {
+  favoritesOpen: boolean
+  selectionsOpen: boolean
+  transformationsOpen: boolean
+  catalogOpen: boolean
+}
+
+const DEFAULT_SECTIONS: TreeSections = {
+  favoritesOpen: true,
+  selectionsOpen: true,
+  transformationsOpen: true,
+  catalogOpen: true,
+}
+
+function loadTreeSections(): TreeSections {
+  try {
+    const raw = localStorage.getItem(SECTIONS_KEY)
+    if (!raw) return { ...DEFAULT_SECTIONS }
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...DEFAULT_SECTIONS }
+    }
+    const o = parsed as Record<string, unknown>
+    return {
+      favoritesOpen: o.favoritesOpen !== false,
+      selectionsOpen: o.selectionsOpen !== false,
+      transformationsOpen: o.transformationsOpen !== false,
+      catalogOpen: o.catalogOpen !== false,
+    }
+  } catch {
+    return { ...DEFAULT_SECTIONS }
+  }
+}
+
+function saveTreeSections(sections: TreeSections): void {
+  try {
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sections))
+  } catch {
+    // ignore quota errors
+  }
+}
+
+/** Collapse local open state whenever foldEpoch bumps (skip initial 0). */
+function useCollapseOnFold(
+  foldEpoch: number,
+  setOpen: (value: boolean | ((prev: boolean) => boolean)) => void,
+) {
+  useEffect(() => {
+    if (foldEpoch > 0) setOpen(false)
+  }, [foldEpoch, setOpen])
+}
+
+export default function ObjectTree({
+  connection,
+  selected,
+  onOpenSelection,
+  activeTransformId = null,
+  onOpenTransformation,
+}: Props) {
   const { favorites, isFavorite, toggle } = useFavorites()
-  const [reveal, setReveal] = useState<RevealPath | null>(null)
+  const { selections, remove: removeSelection } = useSelections()
+  const {
+    transformations,
+    remove: removeTransformation,
+  } = useTransformations()
+  const favFns: FavFns = { isFavorite, onToggleFavorite: toggle }
+  const [sections, setSections] = useState<TreeSections>(loadTreeSections)
+  const [favoritesFoldEpoch, setFavoritesFoldEpoch] = useState(0)
+  const [catalogFoldEpoch, setCatalogFoldEpoch] = useState(0)
+
+  const setSection = (key: keyof TreeSections, open: boolean) => {
+    setSections((prev) => {
+      const next = { ...prev, [key]: open }
+      saveTreeSections(next)
+      return next
+    })
+  }
 
   const databases = useQuery({
     queryKey: ['databases', connection.id],
@@ -62,106 +158,515 @@ export default function ObjectTree({ connection, selected }: Props) {
   }
 
   const items = databases.data ?? []
-  if (items.length === 0 && favorites.length === 0) {
+  if (
+    items.length === 0 &&
+    favorites.length === 0 &&
+    selections.length === 0 &&
+    transformations.length === 0
+  ) {
     return <div className="empty-hint">No databases</div>
   }
 
+  const showFavorites = favorites.length > 0
+  const showSelections = selections.length > 0
+  const showTransformations = transformations.length > 0
+
   return (
     <div className="tree" role="tree">
-      {favorites.length > 0 ? (
-        <FavoritesSection
-          favorites={favorites}
-          selected={selected}
-          isFavorite={isFavorite}
-          onToggle={toggle}
-          onReveal={setReveal}
-        />
+      {showFavorites ? (
+        <TreeSection
+          label="Favorites"
+          open={sections.favoritesOpen}
+          onToggle={() =>
+            setSection('favoritesOpen', !sections.favoritesOpen)
+          }
+          onFoldAll={() => setFavoritesFoldEpoch((n) => n + 1)}
+          count={favorites.length}
+        >
+          <FavoritesSection
+            connection={connection}
+            favorites={favorites}
+            selected={selected}
+            favFns={favFns}
+            foldEpoch={favoritesFoldEpoch}
+          />
+        </TreeSection>
       ) : null}
-      {items.map((db, i) => (
-        <DatabaseNode
-          key={db.name}
-          connection={connection}
-          database={db.name}
-          selected={selected}
-          reveal={reveal}
-          isLast={i === items.length - 1}
-          rails={[]}
-          isFavorite={isFavorite}
-          onToggleFavorite={toggle}
-        />
-      ))}
+      {showSelections ? (
+        <TreeSection
+          label="Selections"
+          open={sections.selectionsOpen}
+          onToggle={() =>
+            setSection('selectionsOpen', !sections.selectionsOpen)
+          }
+          count={selections.length}
+          divider={showFavorites}
+        >
+          <SelectionsList
+            selections={selections}
+            selected={selected}
+            onOpen={onOpenSelection}
+            onRemove={removeSelection}
+          />
+        </TreeSection>
+      ) : null}
+      {showTransformations ? (
+        <TreeSection
+          label="Transformations"
+          open={sections.transformationsOpen}
+          onToggle={() =>
+            setSection('transformationsOpen', !sections.transformationsOpen)
+          }
+          count={transformations.length}
+          divider={showFavorites || showSelections}
+        >
+          <TransformationsList
+            items={transformations}
+            activeId={activeTransformId}
+            onOpen={(id) => onOpenTransformation?.(id)}
+            onRemove={removeTransformation}
+          />
+        </TreeSection>
+      ) : null}
+      <TreeSection
+        label="All objects"
+        open={sections.catalogOpen}
+        onToggle={() => setSection('catalogOpen', !sections.catalogOpen)}
+        onFoldAll={() => setCatalogFoldEpoch((n) => n + 1)}
+        count={items.length}
+        divider={showFavorites || showSelections || showTransformations}
+      >
+        {items.length === 0 ? (
+          <div className="empty-hint">No databases</div>
+        ) : (
+          items.map((db, i) => (
+            <DatabaseNode
+              key={db.name}
+              connection={connection}
+              database={db.name}
+              selected={selected}
+              isLast={i === items.length - 1}
+              rails={[]}
+              defaultOpen={selected?.database === db.name}
+              favFns={favFns}
+              foldEpoch={catalogFoldEpoch}
+            />
+          ))
+        )}
+      </TreeSection>
+    </div>
+  )
+}
+
+function TreeSection({
+  label,
+  open,
+  onToggle,
+  onFoldAll,
+  count,
+  divider,
+  children,
+}: {
+  label: string
+  open: boolean
+  onToggle: () => void
+  onFoldAll?: () => void
+  count?: number
+  divider?: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      className={`tree-section${divider ? ' tree-section-divider' : ''}`}
+      role="group"
+      aria-label={label}
+    >
+      <div className="tree-section-header-row">
+        <button
+          type="button"
+          className="tree-section-header"
+          onClick={onToggle}
+          aria-expanded={open}
+        >
+          <ChevronIcon open={open} />
+          <span className="tree-section-label">{label}</span>
+          {count != null ? (
+            <span className="tree-section-count">{count}</span>
+          ) : null}
+        </button>
+        {onFoldAll && open ? (
+          <button
+            type="button"
+            className="tree-section-fold"
+            onClick={onFoldAll}
+            title="Fold all"
+            aria-label={`Fold all in ${label}`}
+          >
+            <FoldAllIcon />
+          </button>
+        ) : null}
+      </div>
+      {open ? <div className="tree-section-body">{children}</div> : null}
     </div>
   )
 }
 
 function FavoritesSection({
+  connection,
   favorites,
   selected,
-  isFavorite,
-  onToggle,
-  onReveal,
+  favFns,
+  foldEpoch,
 }: {
+  connection: Connection
   favorites: Favorite[]
   selected: SelectedObject | null
-  isFavorite: (fav: Favorite) => boolean
-  onToggle: (fav: Favorite) => void
-  onReveal: (path: RevealPath) => void
+  favFns: FavFns
+  foldEpoch: number
+}) {
+  const forest = buildFavoriteForest(favorites)
+  return (
+    <>
+      {forest.map((node, i) => (
+        <FavoriteDatabaseBranch
+          key={node.database}
+          connection={connection}
+          node={node}
+          selected={selected}
+          isLast={i === forest.length - 1}
+          rails={[]}
+          favFns={favFns}
+          foldEpoch={foldEpoch}
+        />
+      ))}
+    </>
+  )
+}
+
+function SelectionsList({
+  selections,
+  selected,
+  onOpen,
+  onRemove,
+}: {
+  selections: SavedSelection[]
+  selected: SelectedObject | null
+  onOpen: (selection: SavedSelection) => void
+  onRemove: (id: string) => void
 }) {
   return (
-    <div className="favorites-section" role="group" aria-label="Favorites">
-      <div className="favorites-header">Favorites</div>
-      {favorites.map((fav) => {
+    <>
+      {selections.map((sel) => {
         const active =
-          fav.kind === 'object' &&
-          selected?.database === fav.database &&
-          selected?.schema === fav.schema &&
-          selected?.name === fav.name
-        const to =
-          fav.kind === 'object'
-            ? objectPath(fav.database, fav.schema, fav.name, fav.objectKind)
-            : undefined
+          selected?.database === sel.object.database &&
+          selected?.schema === sel.object.schema &&
+          selected?.name === sel.object.name
+        const filters = selectionFilterCount(sel)
+        const title = `${sel.object.database}.${sel.object.schema}.${sel.object.name}`
         return (
-          <TreeRow
-            key={`${fav.kind}:${favoriteTitle(fav)}`}
-            rails={[]}
-            isLast
-            icon={<FavoriteKindIcon fav={fav} />}
-            label={favoriteLabel(fav)}
-            title={favoriteTitle(fav)}
-            active={active}
-            to={to}
-            meta={
-              fav.kind === 'object'
-                ? fav.objectKind
-                : fav.kind === 'schema'
-                  ? 'schema'
-                  : 'database'
-            }
-            favorited={isFavorite(fav)}
-            onToggleFavorite={() => onToggle(fav)}
-            onClick={
-              fav.kind === 'database'
-                ? () => onReveal({ database: fav.database })
-                : fav.kind === 'schema'
-                  ? () =>
-                      onReveal({
-                        database: fav.database,
-                        schema: fav.schema,
-                      })
-                  : undefined
-            }
-          />
+          <div
+            key={sel.id}
+            className={`tree-row selection-row${active ? ' active' : ''}`}
+            role="treeitem"
+            aria-selected={active}
+            onClick={() => onOpen(sel)}
+          >
+            <span className="tree-guides tree-guides-root" aria-hidden />
+            <span className="tree-twistie tree-twistie-spacer" />
+            <span className="tree-icon-slot">
+              <BookmarkIcon filled />
+            </span>
+            <span className="tree-label" title={title}>
+              {sel.name}
+            </span>
+            {filters > 0 ? (
+              <span className="kind-badge">{filters}f</span>
+            ) : null}
+            {sel.sort ? <span className="kind-badge">sort</span> : null}
+            <button
+              type="button"
+              className="selection-remove"
+              title="Remove selection"
+              aria-label="Remove selection"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onRemove(sel.id)
+              }}
+            >
+              <CloseIcon />
+            </button>
+          </div>
         )
       })}
-      <div className="favorites-divider" />
+    </>
+  )
+}
+
+function TransformationsList({
+  items,
+  activeId,
+  onOpen,
+  onRemove,
+}: {
+  items: SavedTransformation[]
+  activeId: string | null
+  onOpen: (id: string) => void
+  onRemove: (id: string) => void
+}) {
+  return (
+    <>
+      {items.map((t) => {
+        const active = activeId === t.id
+        const src = t.recipe.source
+        const title = `${src.database}.${src.schema}.${src.name}`
+        const joinCount = t.recipe.joins.length
+        return (
+          <div
+            key={t.id}
+            className={`tree-row selection-row${active ? ' active' : ''}`}
+            role="treeitem"
+            aria-selected={active}
+            onClick={() => onOpen(t.id)}
+          >
+            <span className="tree-guides tree-guides-root" aria-hidden />
+            <span className="tree-twistie tree-twistie-spacer" />
+            <span className="tree-icon-slot">
+              <TransformIcon />
+            </span>
+            <span className="tree-label" title={title}>
+              {t.name}
+            </span>
+            {joinCount > 0 ? (
+              <span className="kind-badge">{joinCount}j</span>
+            ) : null}
+            {t.recipe.aggregations.length > 0 ? (
+              <span className="kind-badge">agg</span>
+            ) : null}
+            {t.recipe.pivot ? <span className="kind-badge">pivot</span> : null}
+            <button
+              type="button"
+              className="selection-remove"
+              title="Remove transformation"
+              aria-label="Remove transformation"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onRemove(t.id)
+              }}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+function FavoriteDatabaseBranch({
+  connection,
+  node,
+  selected,
+  isLast,
+  rails,
+  favFns,
+  foldEpoch,
+}: {
+  connection: Connection
+  node: FavoriteDatabaseNode
+  selected: SelectedObject | null
+  isLast: boolean
+  rails: Rails
+  favFns: FavFns
+  foldEpoch: number
+}) {
+  // Favorited DB → full schema list from catalog. Otherwise only nested favorites.
+  if (node.favorited) {
+    return (
+      <DatabaseNode
+        connection={connection}
+        database={node.database}
+        selected={selected}
+        isLast={isLast}
+        rails={rails}
+        defaultOpen
+        favFns={favFns}
+        foldEpoch={foldEpoch}
+      />
+    )
+  }
+
+  return (
+    <SyntheticDatabaseNode
+      connection={connection}
+      node={node}
+      selected={selected}
+      isLast={isLast}
+      rails={rails}
+      favFns={favFns}
+      foldEpoch={foldEpoch}
+    />
+  )
+}
+
+function SyntheticDatabaseNode({
+  connection,
+  node,
+  selected,
+  isLast,
+  rails,
+  favFns,
+  foldEpoch,
+}: {
+  connection: Connection
+  node: FavoriteDatabaseNode
+  selected: SelectedObject | null
+  isLast: boolean
+  rails: Rails
+  favFns: FavFns
+  foldEpoch: number
+}) {
+  const fav: Favorite = { kind: 'database', database: node.database }
+  const [open, setOpen] = useState(true)
+  useCollapseOnFold(foldEpoch, setOpen)
+  const schemas = node.schemas
+
+  return (
+    <div role="group">
+      <TreeRow
+        rails={rails}
+        isLast={isLast}
+        expandable
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        icon={<DatabaseIcon />}
+        label={node.database}
+        favorited={favFns.isFavorite(fav)}
+        onToggleFavorite={() => favFns.onToggleFavorite(fav)}
+      />
+      {open
+        ? schemas.map((schema, i) => (
+            <FavoriteSchemaBranch
+              key={schema.schema}
+              connection={connection}
+              database={node.database}
+              node={schema}
+              selected={selected}
+              isLast={i === schemas.length - 1}
+              rails={childRails(rails, isLast)}
+              favFns={favFns}
+              foldEpoch={foldEpoch}
+            />
+          ))
+        : null}
     </div>
   )
 }
 
-function FavoriteKindIcon({ fav }: { fav: Favorite }) {
-  if (fav.kind === 'database') return <DatabaseIcon />
-  if (fav.kind === 'schema') return <FolderIcon open={false} />
-  return fav.objectKind === 'view' ? <ViewIcon /> : <TableIcon />
+function FavoriteSchemaBranch({
+  connection,
+  database,
+  node,
+  selected,
+  isLast,
+  rails,
+  favFns,
+  foldEpoch,
+}: {
+  connection: Connection
+  database: string
+  node: FavoriteSchemaNode
+  selected: SelectedObject | null
+  isLast: boolean
+  rails: Rails
+  favFns: FavFns
+  foldEpoch: number
+}) {
+  if (node.favorited) {
+    return (
+      <SchemaNode
+        connection={connection}
+        database={database}
+        schema={node.schema}
+        selected={selected}
+        isLast={isLast}
+        rails={rails}
+        defaultOpen
+        favFns={favFns}
+        foldEpoch={foldEpoch}
+      />
+    )
+  }
+
+  return (
+    <SyntheticSchemaNode
+      database={database}
+      node={node}
+      selected={selected}
+      isLast={isLast}
+      rails={rails}
+      favFns={favFns}
+      foldEpoch={foldEpoch}
+    />
+  )
+}
+
+function SyntheticSchemaNode({
+  database,
+  node,
+  selected,
+  isLast,
+  rails,
+  favFns,
+  foldEpoch,
+}: {
+  database: string
+  node: FavoriteSchemaNode
+  selected: SelectedObject | null
+  isLast: boolean
+  rails: Rails
+  favFns: FavFns
+  foldEpoch: number
+}) {
+  const fav: Favorite = { kind: 'schema', database, schema: node.schema }
+  const [open, setOpen] = useState(true)
+  useCollapseOnFold(foldEpoch, setOpen)
+  const objects = node.objects
+
+  return (
+    <div role="group">
+      <TreeRow
+        rails={rails}
+        isLast={isLast}
+        expandable
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        icon={<FolderIcon open={open} />}
+        label={node.schema}
+        favorited={favFns.isFavorite(fav)}
+        onToggleFavorite={() => favFns.onToggleFavorite(fav)}
+      />
+      {open
+        ? objects.map((obj, i) => (
+            <ObjectRow
+              key={`${obj.objectKind}:${obj.name}`}
+              database={database}
+              schema={node.schema}
+              object={{ name: obj.name, kind: obj.objectKind }}
+              active={
+                selected?.database === database &&
+                selected?.schema === node.schema &&
+                selected?.name === obj.name
+              }
+              isLast={i === objects.length - 1}
+              rails={childRails(rails, isLast)}
+              favFns={favFns}
+            />
+          ))
+        : null}
+    </div>
+  )
 }
 
 function TreeRow({
@@ -236,7 +741,13 @@ function TreeRow({
       <span className="tree-label" title={title ?? label}>
         {label}
       </span>
-      {meta ? <span className="kind-badge">{meta}</span> : null}
+      {meta ? (
+        <span
+          className={`kind-badge${/^\d/.test(meta) ? ' tree-count' : ''}`}
+        >
+          {meta}
+        </span>
+      ) : null}
       {star}
     </>
   )
@@ -300,34 +811,35 @@ function DatabaseNode({
   connection,
   database,
   selected,
-  reveal,
   isLast,
   rails,
-  isFavorite,
-  onToggleFavorite,
+  defaultOpen,
+  favFns,
+  foldEpoch,
 }: {
   connection: Connection
   database: string
   selected: SelectedObject | null
-  reveal: RevealPath | null
   isLast: boolean
   rails: Rails
-  isFavorite: (fav: Favorite) => boolean
-  onToggleFavorite: (fav: Favorite) => void
+  defaultOpen: boolean
+  favFns: FavFns
+  foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'database', database }
-  const shouldOpen =
-    selected?.database === database || reveal?.database === database
-  const [open, setOpen] = useState(() => shouldOpen)
+  const inPath = selected?.database === database
+  const [open, setOpen] = useState(() => defaultOpen || inPath)
+  useCollapseOnFold(foldEpoch, setOpen)
   const schemas = useQuery({
     queryKey: ['schemas', connection.id, database],
     queryFn: () => listSchemas(connection, database),
     enabled: open,
   })
 
+  // Re-open when selection moves into this db (not on every render while selected).
   useEffect(() => {
-    if (shouldOpen) setOpen(true)
-  }, [shouldOpen])
+    if (selected?.database === database) setOpen(true)
+  }, [selected?.database, database])
 
   const children = schemas.data ?? []
 
@@ -341,8 +853,8 @@ function DatabaseNode({
         onToggle={() => setOpen((v) => !v)}
         icon={<DatabaseIcon />}
         label={database}
-        favorited={isFavorite(fav)}
-        onToggleFavorite={() => onToggleFavorite(fav)}
+        favorited={favFns.isFavorite(fav)}
+        onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open ? (
         schemas.isLoading ? (
@@ -367,11 +879,14 @@ function DatabaseNode({
               database={database}
               schema={schema.name}
               selected={selected}
-              reveal={reveal}
               isLast={i === children.length - 1}
               rails={childRails(rails, isLast)}
-              isFavorite={isFavorite}
-              onToggleFavorite={onToggleFavorite}
+              defaultOpen={
+                selected?.database === database &&
+                selected?.schema === schema.name
+              }
+              favFns={favFns}
+              foldEpoch={foldEpoch}
             />
           ))
         )
@@ -385,29 +900,27 @@ function SchemaNode({
   database,
   schema,
   selected,
-  reveal,
   isLast,
   rails,
-  isFavorite,
-  onToggleFavorite,
+  defaultOpen,
+  favFns,
+  foldEpoch,
 }: {
   connection: Connection
   database: string
   schema: string
   selected: SelectedObject | null
-  reveal: RevealPath | null
   isLast: boolean
   rails: Rails
-  isFavorite: (fav: Favorite) => boolean
-  onToggleFavorite: (fav: Favorite) => void
+  defaultOpen: boolean
+  favFns: FavFns
+  foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'schema', database, schema }
   const inPath =
     selected?.database === database && selected?.schema === schema
-  const revealHere =
-    reveal?.database === database && reveal.schema === schema
-  const shouldOpen = inPath || revealHere
-  const [open, setOpen] = useState(() => shouldOpen)
+  const [open, setOpen] = useState(() => defaultOpen || inPath)
+  useCollapseOnFold(foldEpoch, setOpen)
   const objects = useQuery({
     queryKey: ['objects', connection.id, database, schema],
     queryFn: () => listObjects(connection, database, schema),
@@ -415,8 +928,10 @@ function SchemaNode({
   })
 
   useEffect(() => {
-    if (shouldOpen) setOpen(true)
-  }, [shouldOpen])
+    if (selected?.database === database && selected?.schema === schema) {
+      setOpen(true)
+    }
+  }, [selected?.database, selected?.schema, database, schema])
 
   const children = objects.data ?? []
 
@@ -430,8 +945,8 @@ function SchemaNode({
         onToggle={() => setOpen((v) => !v)}
         icon={<FolderIcon open={open} />}
         label={schema}
-        favorited={isFavorite(fav)}
-        onToggleFavorite={() => onToggleFavorite(fav)}
+        favorited={favFns.isFavorite(fav)}
+        onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open ? (
         objects.isLoading ? (
@@ -465,8 +980,7 @@ function SchemaNode({
               }
               isLast={i === children.length - 1}
               rails={childRails(rails, isLast)}
-              isFavorite={isFavorite}
-              onToggleFavorite={onToggleFavorite}
+              favFns={favFns}
             />
           ))
         )
@@ -482,8 +996,7 @@ function ObjectRow({
   active,
   isLast,
   rails,
-  isFavorite,
-  onToggleFavorite,
+  favFns,
 }: {
   database: string
   schema: string
@@ -491,8 +1004,7 @@ function ObjectRow({
   active: boolean
   isLast: boolean
   rails: Rails
-  isFavorite: (fav: Favorite) => boolean
-  onToggleFavorite: (fav: Favorite) => void
+  favFns: FavFns
 }) {
   const fav: Favorite = {
     kind: 'object',
@@ -501,17 +1013,27 @@ function ObjectRow({
     name: object.name,
     objectKind: object.kind,
   }
+  const count =
+    object.kind === 'table' && object.row_count != null
+      ? formatShortCount(object.row_count)
+      : null
+  const title =
+    object.kind === 'table' && object.row_count != null
+      ? `${object.name} · ${object.row_count.toLocaleString()} rows`
+      : object.name
+
   return (
     <TreeRow
       rails={rails}
       isLast={isLast}
       icon={<ObjectKindIcon kind={object.kind} />}
       label={object.name}
+      title={title}
       active={active}
       to={objectPath(database, schema, object.name, object.kind)}
-      meta={object.kind}
-      favorited={isFavorite(fav)}
-      onToggleFavorite={() => onToggleFavorite(fav)}
+      meta={count ?? object.kind}
+      favorited={favFns.isFavorite(fav)}
+      onToggleFavorite={() => favFns.onToggleFavorite(fav)}
     />
   )
 }

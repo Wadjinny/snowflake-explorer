@@ -193,6 +193,273 @@ export function SidebarToggleIcon({
   )
 }
 
+/** Bookmark / save selection view. */
+export function TransformIcon({ className }: IconProps) {
+  return (
+    <svg {...base} className={className ?? 'tree-icon'}>
+      <path
+        d="M3 4h4v3H3zM9 4h4v3H9zM6 9h4v3H6z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        fill="none"
+      />
+      <path
+        d="M5 7v2M11 7v2M8 7v2"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+export function BookmarkIcon({
+  filled,
+  className,
+}: IconProps & { filled?: boolean }) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4 2.5h8c.55 0 1 .45 1 1V14l-5-2.4L3 14V3.5c0-.55.45-1 1-1z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+        fill={filled ? 'currentColor' : 'none'}
+        fillOpacity={filled ? 0.85 : undefined}
+      />
+    </svg>
+  )
+}
+
+export function CloseIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={10}
+      height={10}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4 4l8 8M12 4l-8 8"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+export function CheckIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M3.5 8.5l3 3 6-6.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+export function CopyIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <rect
+        x="5.5"
+        y="5.5"
+        width="7"
+        height="8"
+        rx="1"
+        stroke="currentColor"
+        strokeWidth="1.25"
+      />
+      <path
+        d="M3.5 10.5V3.5c0-.55.45-1 1-1H10"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+/** Clear / reset (circle with slash). */
+export function ClearIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r="5.25"
+        stroke="currentColor"
+        strokeWidth="1.25"
+      />
+      <path
+        d="M4.4 4.4l7.2 7.2"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+export function DuplicateIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <rect
+        x="5.5"
+        y="5.5"
+        width="7"
+        height="8"
+        rx="1"
+        stroke="currentColor"
+        strokeWidth="1.25"
+      />
+      <path
+        d="M3.5 10.5V3.5c0-.55.45-1 1-1H10"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+export function SqlIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M5.5 4.5L2.8 8l2.7 3.5M10.5 4.5l2.7 3.5-2.7 3.5"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+export function CsvIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M8 2.5v8"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+      <path
+        d="M5 8l3 3 3-3"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3 13h10"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+export function PlayIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M5.5 3.5v9l8-4.5-8-4.5z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+        fill="currentColor"
+        fillOpacity="0.2"
+      />
+    </svg>
+  )
+}
+
+/** Collapse all expanded branches (two stacked chevrons). */
+export function FoldAllIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4 5.5L8 9.5l4-4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 9.5L8 13.5l4-4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 export function StarIcon({
   filled,
   className,

@@ -12,8 +12,10 @@ FACETABLE = frozenset({"string", "number", "date", "timestamp"})
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def facet_expr(column: str, col_type: str) -> str:
+def facet_expr(column: str, col_type: str, *, alias: str | None = None) -> str:
     ident = quote_ident(column)
+    if alias:
+        ident = f"{quote_ident(alias)}.{ident}"
     if col_type == "timestamp":
         return f"CAST({ident} AS DATE)"
     return ident
@@ -64,7 +66,13 @@ def sql_value_literal(value: object, col_type: str) -> str:
     return f"'{text}'"
 
 
-def build_filter_clause(column: str, col_type: str, values: list[Any]) -> str | None:
+def build_filter_clause(
+    column: str,
+    col_type: str,
+    values: list[Any],
+    *,
+    alias: str | None = None,
+) -> str | None:
     if col_type not in FACETABLE:
         raise HTTPException(
             status_code=400, detail=f"Filtering not supported for type {col_type}"
@@ -72,7 +80,7 @@ def build_filter_clause(column: str, col_type: str, values: list[Any]) -> str | 
     if not values:
         return None
 
-    expr = facet_expr(column, col_type)
+    expr = facet_expr(column, col_type, alias=alias)
     has_null = any(v is None for v in values)
     non_null = [v for v in values if v is not None]
 
@@ -90,11 +98,28 @@ def build_filter_clause(column: str, col_type: str, values: list[Any]) -> str | 
     return "(" + " OR ".join(parts) + ")"
 
 
-def build_where(filters: list[tuple[str, str, list[Any]]]) -> str:
-    """filters: list of (column, type, values)."""
+def build_where(
+    filters: list[tuple[str, str, list[Any]]],
+    *,
+    aliases: dict[str, str] | None = None,
+) -> str:
+    """filters: list of (column, type, values).
+
+    When *aliases* is provided, each filter column may be ``alias.column``;
+    bare columns map via aliases.get(column) or default alias ``t0``.
+    """
     clauses: list[str] = []
     for column, col_type, values in filters:
-        clause = build_filter_clause(column, col_type, values)
+        alias: str | None = None
+        col = column
+        if aliases is not None:
+            if "." in column:
+                a, _, c = column.partition(".")
+                alias, col = a, c
+            else:
+                alias = aliases.get(column, "t0")
+                col = column
+        clause = build_filter_clause(col, col_type, values, alias=alias)
         if clause:
             clauses.append(clause)
     if not clauses:

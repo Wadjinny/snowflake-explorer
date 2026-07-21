@@ -48,7 +48,7 @@ def list_objects(
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> list[ObjectItem]:
     sql = f"""
-        SELECT TABLE_NAME, TABLE_TYPE
+        SELECT TABLE_NAME, TABLE_TYPE, ROW_COUNT
         FROM {fqn(db)}.INFORMATION_SCHEMA.TABLES
         WHERE TABLE_SCHEMA = %(schema)s
           AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
@@ -62,7 +62,13 @@ def list_objects(
         ) from exc
 
     items: list[ObjectItem] = []
-    for name, table_type in rows:
+    for name, table_type, row_count in rows:
         kind = "view" if str(table_type).upper() == "VIEW" else "table"
-        items.append(ObjectItem(name=str(name), kind=kind))
+        count: int | None = None
+        if kind == "table" and row_count is not None:
+            try:
+                count = int(row_count)
+            except (TypeError, ValueError):
+                count = None
+        items.append(ObjectItem(name=str(name), kind=kind, row_count=count))
     return items

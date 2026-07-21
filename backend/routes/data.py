@@ -1,7 +1,7 @@
 import logging
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from snowflake.connector.errors import Error as SnowflakeError
 
 from deps import get_connection
@@ -14,9 +14,9 @@ from filters import (
 from models import (
     ColumnInfo,
     ColumnType,
+    FacetRequest,
     FacetResult,
     FacetValue,
-    FacetableType,
     PreviewRequest,
     PreviewResult,
     SnowflakeConnection,
@@ -164,7 +164,7 @@ def preview_object(
     )
 
 
-@router.get(
+@router.post(
     "/databases/{db}/schemas/{schema}/objects/{name}/facet",
     response_model=FacetResult,
 )
@@ -172,29 +172,36 @@ def facet_column(
     db: str,
     schema: str,
     name: str,
-    column: str = Query(min_length=1),
-    col_type: FacetableType = Query(alias="type"),
-    q: str = Query(default=""),
-    limit: int = Query(default=10, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    body: FacetRequest,
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> FacetResult:
-    if col_type not in FACETABLE:
+    if body.type not in FACETABLE:
         raise HTTPException(status_code=400, detail="Unsupported facet type")
 
+    column = body.column
+    col_type = body.type
     expr = facet_expr(column, col_type)
     table = fqn(db, schema, name)
     params: dict[str, Any] = {
-        "limit": limit + 1,
-        "offset": offset,
+        "limit": body.limit + 1,
+        "offset": body.offset,
     }
 
-    where_parts: list[str] = []
-    if q.strip():
-        where_parts.append(f"CAST({expr} AS VARCHAR) ILIKE %(q)s")
-        params["q"] = f"%{q.strip()}%"
+    # Scope by other filters; never apply this column's own filter to its facets.
+    other = [
+        (f.column, f.type, f.values)
+        for f in body.filters
+        if f.column != column
+    ]
+    clauses: list[str] = []
+    filter_where = build_where(other)
+    if filter_where:
+        clauses.append(filter_where.removeprefix(" WHERE "))
+    if body.q.strip():
+        clauses.append(f"CAST({expr} AS VARCHAR) ILIKE %(q)s")
+        params["q"] = f"%{body.q.strip()}%"
 
-    where_sql = f" WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = (
         f"SELECT {expr} AS value, COUNT(*) AS cnt "
         f"FROM {table}"
@@ -209,8 +216,8 @@ def facet_column(
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
-    has_more = len(rows) > limit
-    page = rows[:limit]
+    has_more = len(rows) > body.limit
+    page = rows[: body.limit]
     values: list[FacetValue] = []
     for raw_value, count in page:
         serialized = serialize_facet_value(raw_value)
@@ -224,7 +231,7 @@ def facet_column(
 
     return FacetResult(
         values=values,
-        limit=limit,
-        offset=offset,
+        limit=body.limit,
+        offset=body.offset,
         has_more=has_more,
     )

@@ -5,6 +5,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './index.css'
 import { ConnectionsProvider } from './connections.tsx'
 import { FavoritesProvider } from './favoritesContext.tsx'
+import { SelectionsProvider } from './selectionsContext.tsx'
+import { TransformationsProvider } from './transformationsContext.tsx'
+import { TransformTabsProvider } from './transformTabsContext.tsx'
 import { router } from './router.tsx'
 
 const queryClient = new QueryClient({
@@ -20,9 +23,15 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ConnectionsProvider>
       <FavoritesProvider>
-        <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
-        </QueryClientProvider>
+        <SelectionsProvider>
+          <TransformationsProvider>
+            <TransformTabsProvider>
+              <QueryClientProvider client={queryClient}>
+                <RouterProvider router={router} />
+              </QueryClientProvider>
+            </TransformTabsProvider>
+          </TransformationsProvider>
+        </SelectionsProvider>
       </FavoritesProvider>
     </ConnectionsProvider>
   </StrictMode>,

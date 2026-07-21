@@ -1,5 +1,6 @@
 import type {
   ColumnFilter,
+  ColumnInfo,
   Connection,
   FacetResult,
   FacetableType,
@@ -119,16 +120,46 @@ export function facetColumn(
   q: string,
   limit: number,
   offset: number,
+  filters: ColumnFilter[] = [],
 ): Promise<FacetResult> {
-  const params = new URLSearchParams({
-    column,
-    type,
-    q,
-    limit: String(limit),
-    offset: String(offset),
-  })
   return apiFetch(
     connection,
-    `/api/databases/${encodeURIComponent(database)}/schemas/${encodeURIComponent(schema)}/objects/${encodeURIComponent(name)}/facet?${params}`,
+    `/api/databases/${encodeURIComponent(database)}/schemas/${encodeURIComponent(schema)}/objects/${encodeURIComponent(name)}/facet`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        column,
+        type,
+        q,
+        limit,
+        offset,
+        filters,
+      }),
+    },
   )
+}
+
+export type TransformRunResult = PreviewResult & { sql: string }
+
+export function runTransform(
+  connection: Connection,
+  recipe: unknown,
+): Promise<TransformRunResult> {
+  return apiFetch(connection, '/api/transform/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recipe }),
+  })
+}
+
+export function probeTransformColumns(
+  connection: Connection,
+  recipe: unknown,
+): Promise<ColumnInfo[]> {
+  return apiFetch(connection, '/api/transform/columns', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recipe }),
+  })
 }

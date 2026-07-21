@@ -18,6 +18,8 @@ class NameItem(BaseModel):
 class ObjectItem(BaseModel):
     name: str
     kind: Literal["table", "view"]
+    # Metadata row count for tables; null for views / unknown.
+    row_count: int | None = None
 
 
 ColumnType = Literal[
@@ -67,6 +69,16 @@ class PreviewRequest(BaseModel):
     sort: SortSpec | None = None
 
 
+class FacetRequest(BaseModel):
+    column: str = Field(min_length=1)
+    type: FacetableType
+    q: str = ""
+    limit: int = Field(default=10, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    # Other column filters to scope counts (current column excluded server-side).
+    filters: list[ColumnFilter] = Field(default_factory=list)
+
+
 class FacetValue(BaseModel):
     value: Any = None
     label: str
@@ -82,3 +94,79 @@ class FacetResult(BaseModel):
 
 class OkResponse(BaseModel):
     ok: bool = True
+
+
+# --- Transformations ---
+
+ObjectKind = Literal["table", "view"]
+JoinType = Literal["inner", "left", "right", "full"]
+AggFn = Literal["count", "count_distinct", "sum", "avg", "min", "max"]
+
+
+class SelectedObjectRef(BaseModel):
+    database: str = Field(min_length=1)
+    schema_name: str = Field(alias="schema", min_length=1)
+    name: str = Field(min_length=1)
+    kind: ObjectKind = "table"
+
+    model_config = {"populate_by_name": True}
+
+
+class JoinOn(BaseModel):
+    leftAlias: str = Field(min_length=1)
+    leftColumn: str = Field(min_length=1)
+    rightAlias: str = Field(min_length=1)
+    rightColumn: str = Field(min_length=1)
+
+
+class TransformJoin(BaseModel):
+    id: str
+    type: JoinType
+    target: SelectedObjectRef
+    alias: str = Field(min_length=1)
+    on: list[JoinOn] = Field(default_factory=list)
+
+
+class RecipeColumn(BaseModel):
+    ref: str = Field(min_length=1)
+    as_name: str | None = Field(default=None, alias="as")
+
+    model_config = {"populate_by_name": True}
+
+
+class Aggregation(BaseModel):
+    id: str
+    fn: AggFn
+    column: str | None = None
+    alias: str = Field(min_length=1)
+
+
+class PivotSpec(BaseModel):
+    rowKeys: list[str] = Field(default_factory=list)
+    pivotColumn: str = Field(min_length=1)
+    valueColumn: str = Field(min_length=1)
+    agg: AggFn = "sum"
+
+
+class TransformRecipe(BaseModel):
+    source: SelectedObjectRef
+    sourceAlias: str = "t0"
+    joins: list[TransformJoin] = Field(default_factory=list)
+    filters: list[ColumnFilter] = Field(default_factory=list)
+    columns: list[RecipeColumn] = Field(default_factory=list)
+    groupBy: list[str] = Field(default_factory=list)
+    aggregations: list[Aggregation] = Field(default_factory=list)
+    pivot: PivotSpec | None = None
+    sort: SortSpec | None = None
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+class TransformRequest(BaseModel):
+    recipe: TransformRecipe
+
+
+class TransformResult(BaseModel):
+    columns: list[ColumnInfo]
+    rows: list[list[Any]]
+    total: int
+    sql: str

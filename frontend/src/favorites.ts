@@ -11,10 +11,91 @@ export type Favorite =
       objectKind: ObjectKind
     }
 
-/** Path to expand in the tree when a db/schema favorite is opened. */
-export type RevealPath = {
+export type FavoriteObjectNode = {
+  name: string
+  objectKind: ObjectKind
+}
+
+export type FavoriteSchemaNode = {
+  schema: string
+  favorited: boolean
+  objects: FavoriteObjectNode[]
+}
+
+export type FavoriteDatabaseNode = {
   database: string
-  schema?: string
+  favorited: boolean
+  schemas: FavoriteSchemaNode[]
+}
+
+/** Nest flat favorites into database → schema → object trees. */
+export function buildFavoriteForest(favorites: Favorite[]): FavoriteDatabaseNode[] {
+  const order: string[] = []
+  const dbs = new Map<
+    string,
+    {
+      favorited: boolean
+      schemaOrder: string[]
+      schemas: Map<
+        string,
+        { favorited: boolean; objectOrder: string[]; objects: Map<string, ObjectKind> }
+      >
+    }
+  >()
+
+  const ensureDb = (database: string) => {
+    let db = dbs.get(database)
+    if (!db) {
+      db = { favorited: false, schemaOrder: [], schemas: new Map() }
+      dbs.set(database, db)
+      order.push(database)
+    }
+    return db
+  }
+
+  const ensureSchema = (database: string, schema: string) => {
+    const db = ensureDb(database)
+    let sch = db.schemas.get(schema)
+    if (!sch) {
+      sch = { favorited: false, objectOrder: [], objects: new Map() }
+      db.schemas.set(schema, sch)
+      db.schemaOrder.push(schema)
+    }
+    return sch
+  }
+
+  for (const fav of favorites) {
+    if (fav.kind === 'database') {
+      ensureDb(fav.database).favorited = true
+    } else if (fav.kind === 'schema') {
+      ensureSchema(fav.database, fav.schema).favorited = true
+    } else {
+      const sch = ensureSchema(fav.database, fav.schema)
+      if (!sch.objects.has(fav.name)) {
+        sch.objectOrder.push(fav.name)
+      }
+      sch.objects.set(fav.name, fav.objectKind)
+    }
+  }
+
+  return order.map((database) => {
+    const db = dbs.get(database)!
+    return {
+      database,
+      favorited: db.favorited,
+      schemas: db.schemaOrder.map((schema) => {
+        const sch = db.schemas.get(schema)!
+        return {
+          schema,
+          favorited: sch.favorited,
+          objects: sch.objectOrder.map((name) => ({
+            name,
+            objectKind: sch.objects.get(name)!,
+          })),
+        }
+      }),
+    }
+  })
 }
 
 function storageKey(connectionId: string): string {
