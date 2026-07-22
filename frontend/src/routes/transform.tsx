@@ -158,11 +158,13 @@ export default function TransformWorkspace() {
       setResult(data)
       if (tab && chart && !chart.x && data.columns.length > 0) {
         const x = data.columns[0]?.name ?? null
-        const y =
+        const yCol =
           data.columns.find((c) => c.type === 'number')?.name ??
           data.columns[1]?.name ??
           null
-        updateTab(tab.id, { chart: { ...chart, x, y } })
+        updateTab(tab.id, {
+          chart: { ...chart, x, y: yCol ? [yCol] : [] },
+        })
       }
     },
   })

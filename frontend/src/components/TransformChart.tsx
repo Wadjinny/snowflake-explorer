@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import type { PreviewResult } from '../types'
+import type { ColumnInfo, PreviewResult } from '../types'
 import type { ChartConfig, ChartType } from '../transformations'
 
 type Props = {
@@ -18,13 +18,52 @@ const CHART_TYPES: { id: ChartType; label: string }[] = [
   { id: 'heatmap', label: 'Heatmap' },
 ]
 
+const SERIES_COLORS = [
+  '#0e639c',
+  '#4ec9b0',
+  '#ce9178',
+  '#c586c0',
+  '#dcdcaa',
+  '#9cdcfe',
+  '#f44747',
+]
+
+const MULTI_Y_TYPES: ChartType[] = ['bar', 'line', 'area']
+
+function supportsMultiY(type: ChartType): boolean {
+  return MULTI_Y_TYPES.includes(type)
+}
+
 export default function TransformChart({ data, chart, onChange }: Props) {
-  const colNames = data?.columns.map((c) => c.name) ?? []
+  const columns = data?.columns ?? []
+  const colNames = columns.map((c) => c.name)
+  const yCols = chart.y ?? []
+  const multiY = supportsMultiY(chart.type)
+  const showSeries =
+    (chart.type === 'heatmap' || chart.type === 'bar' || chart.type === 'line') &&
+    !(multiY && yCols.length > 1)
 
   const option = useMemo(() => {
     if (!data || !chart.x) return null
     return buildOption(data, chart)
   }, [data, chart])
+
+  const setSingleY = (name: string) => {
+    onChange({ ...chart, y: name ? [name] : [] })
+  }
+
+  const toggleY = (name: string) => {
+    const set = new Set(yCols)
+    if (set.has(name)) set.delete(name)
+    else set.add(name)
+    // Keep selection order stable: selected in column order.
+    const next = colNames.filter((n) => set.has(n))
+    onChange({
+      ...chart,
+      y: next,
+      series: next.length > 1 ? null : chart.series,
+    })
+  }
 
   return (
     <div className="transform-chart">
@@ -34,9 +73,22 @@ export default function TransformChart({ data, chart, onChange }: Props) {
           <select
             className="select"
             value={chart.type}
-            onChange={(e) =>
-              onChange({ ...chart, type: e.target.value as ChartType })
-            }
+            onChange={(e) => {
+              const type = e.target.value as ChartType
+              const nextY =
+                supportsMultiY(type) || yCols.length <= 1
+                  ? yCols
+                  : yCols.slice(0, 1)
+              onChange({
+                ...chart,
+                type,
+                y: nextY,
+                series:
+                  supportsMultiY(type) && nextY.length > 1
+                    ? null
+                    : chart.series,
+              })
+            }}
           >
             {CHART_TYPES.map((t) => (
               <option key={t.id} value={t.id}>
@@ -62,24 +114,31 @@ export default function TransformChart({ data, chart, onChange }: Props) {
             ))}
           </select>
         </label>
-        <label className="tf-field">
-          <span className="tf-label">Y</span>
-          <select
-            className="select"
-            value={chart.y ?? ''}
-            onChange={(e) =>
-              onChange({ ...chart, y: e.target.value || null })
-            }
-          >
-            <option value="">—</option>
-            {colNames.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
-        {chart.type === 'heatmap' || chart.type === 'bar' || chart.type === 'line' ? (
+        {multiY ? (
+          <YMultiSelect
+            columns={columns}
+            selected={yCols}
+            exclude={chart.x}
+            onToggle={toggleY}
+          />
+        ) : (
+          <label className="tf-field">
+            <span className="tf-label">Y</span>
+            <select
+              className="select"
+              value={yCols[0] ?? ''}
+              onChange={(e) => setSingleY(e.target.value)}
+            >
+              <option value="">—</option>
+              {colNames.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {showSeries ? (
           <label className="tf-field">
             <span className="tf-label">Series</span>
             <select
@@ -104,6 +163,9 @@ export default function TransformChart({ data, chart, onChange }: Props) {
           <div className="empty-hint">Run a transform to chart results</div>
         ) : !chart.x ? (
           <div className="empty-hint">Pick an X column</div>
+        ) : (chart.type === 'scatter' || chart.type === 'heatmap') &&
+          yCols.length === 0 ? (
+          <div className="empty-hint">Pick a Y column</div>
         ) : !option ? (
           <div className="empty-hint">Not enough data for this chart</div>
         ) : (
@@ -115,6 +177,96 @@ export default function TransformChart({ data, chart, onChange }: Props) {
           />
         )}
       </div>
+    </div>
+  )
+}
+
+function YMultiSelect({
+  columns,
+  selected,
+  exclude,
+  onToggle,
+}: {
+  columns: ColumnInfo[]
+  selected: string[]
+  exclude: string | null
+  onToggle: (name: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const selectedSet = new Set(selected)
+
+  const ordered = useMemo(() => {
+    const list = columns.filter((c) => c.name !== exclude)
+    return [
+      ...list.filter((c) => c.type === 'number'),
+      ...list.filter((c) => c.type !== 'number'),
+    ]
+  }, [columns, exclude])
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (rootRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', onDoc)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDoc)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const label =
+    selected.length === 0
+      ? '—'
+      : selected.length === 1
+        ? selected[0]
+        : `${selected.length} selected`
+
+  return (
+    <div className="tf-field tf-y-multi" ref={rootRef}>
+      <span className="tf-label">
+        Y{selected.length > 0 ? ` (${selected.length})` : ''}
+      </span>
+      <button
+        type="button"
+        className={`select tf-y-multi-trigger${open ? ' open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <span className="tf-y-multi-value">{label}</span>
+      </button>
+      {open ? (
+        <div className="tf-y-multi-popover" role="listbox" aria-multiselectable>
+          {ordered.length === 0 ? (
+            <div className="tf-y-multi-empty">No columns</div>
+          ) : (
+            ordered.map((col) => {
+              const checked = selectedSet.has(col.name)
+              return (
+                <label
+                  key={col.name}
+                  className={`tf-y-multi-item${checked ? ' checked' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggle(col.name)}
+                  />
+                  <span className="tf-y-multi-name">{col.name}</span>
+                  <span className={`th-type type-${col.type}`}>{col.type}</span>
+                </label>
+              )
+            })
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -133,7 +285,8 @@ function toNum(v: string | number | boolean | null): number | null {
 function buildOption(data: PreviewResult, chart: ChartConfig) {
   const xi = chart.x ? colIndex(data, chart.x) : -1
   if (xi < 0) return null
-  const yi = chart.y ? colIndex(data, chart.y) : -1
+  const yNames = (chart.y ?? []).filter((n) => colIndex(data, n) >= 0)
+  const yi = yNames[0] != null ? colIndex(data, yNames[0]) : -1
   const si = chart.series ? colIndex(data, chart.series) : -1
 
   const textColor = '#9d9d9d'
@@ -141,7 +294,7 @@ function buildOption(data: PreviewResult, chart: ChartConfig) {
   const base = {
     backgroundColor: 'transparent',
     textStyle: { color: textColor, fontSize: 11 },
-    grid: { left: 48, right: 16, top: 24, bottom: 40 },
+    grid: { left: 48, right: 16, top: 28, bottom: 40 },
     tooltip: { trigger: 'axis' as const },
   }
 
@@ -234,32 +387,70 @@ function buildOption(data: PreviewResult, chart: ChartConfig) {
       .filter((p): p is number[] => p != null)
     return {
       ...base,
-      xAxis: { type: 'value', axisLine, splitLine: { lineStyle: { color: '#2a2a2a' } } },
-      yAxis: { type: 'value', axisLine, splitLine: { lineStyle: { color: '#2a2a2a' } } },
+      xAxis: {
+        type: 'value',
+        axisLine,
+        splitLine: { lineStyle: { color: '#2a2a2a' } },
+      },
+      yAxis: {
+        type: 'value',
+        axisLine,
+        splitLine: { lineStyle: { color: '#2a2a2a' } },
+      },
       series: [
         {
           type: 'scatter',
           data: points,
-          itemStyle: { color: '#0e639c' },
+          itemStyle: { color: SERIES_COLORS[0] },
         },
       ],
     }
   }
 
-  // bar / line / area
+  // bar / line / area — one series per Y (or count of 1 when none)
   const categories = data.rows.map((row) =>
     row[xi] == null ? 'NULL' : String(row[xi]),
   )
-  const values =
-    yi >= 0
-      ? data.rows.map((row) => toNum(row[yi]) ?? 0)
-      : data.rows.map(() => 1)
-
   const seriesType =
     chart.type === 'area' ? 'line' : chart.type === 'line' ? 'line' : 'bar'
 
+  const seriesNames = yNames.length > 0 ? yNames : ['count']
+  const series = seriesNames.map((name, i) => {
+    const color = SERIES_COLORS[i % SERIES_COLORS.length]
+    const values =
+      yNames.length === 0
+        ? data.rows.map(() => 1)
+        : data.rows.map((row) => {
+            const idx = colIndex(data, name)
+            return idx >= 0 ? (toNum(row[idx]) ?? 0) : 0
+          })
+    return {
+      name,
+      type: seriesType,
+      data: values,
+      areaStyle: chart.type === 'area' ? { opacity: 0.25, color } : undefined,
+      itemStyle: { color },
+      lineStyle: { color },
+      smooth: chart.type !== 'bar',
+    }
+  })
+
   return {
     ...base,
+    legend:
+      series.length > 1
+        ? {
+            data: seriesNames,
+            top: 0,
+            textStyle: { color: textColor, fontSize: 10 },
+            itemWidth: 10,
+            itemHeight: 8,
+          }
+        : undefined,
+    grid: {
+      ...base.grid,
+      top: series.length > 1 ? 36 : 24,
+    },
     xAxis: {
       type: 'category',
       data: categories,
@@ -272,15 +463,6 @@ function buildOption(data: PreviewResult, chart: ChartConfig) {
       splitLine: { lineStyle: { color: '#2a2a2a' } },
       axisLabel: { color: textColor, fontSize: 10 },
     },
-    series: [
-      {
-        type: seriesType,
-        data: values,
-        areaStyle: chart.type === 'area' ? { opacity: 0.25 } : undefined,
-        itemStyle: { color: '#0e639c' },
-        lineStyle: { color: '#4ec9b0' },
-        smooth: chart.type !== 'bar',
-      },
-    ],
+    series,
   }
 }

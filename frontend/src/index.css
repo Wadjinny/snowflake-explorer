@@ -3046,6 +3046,84 @@ body.col-resizing * {
   min-width: 100px;
 }
 
+.tf-y-multi {
+  position: relative;
+  min-width: 140px;
+}
+
+.tf-y-multi-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tf-y-multi-trigger.open {
+  border-color: var(--accent);
+}
+
+.tf-y-multi-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tf-y-multi-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 100%;
+  max-width: 280px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--raised);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.tf-y-multi-empty {
+  padding: 8px 10px;
+  color: var(--text-ghost);
+  font-size: 11px;
+}
+
+.tf-y-multi-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.tf-y-multi-item:hover {
+  background: var(--hover);
+}
+
+.tf-y-multi-item.checked {
+  color: var(--text);
+}
+
+.tf-y-multi-item input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tf-y-multi-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .transform-chart-body {
   flex: 1;
   min-height: 0;

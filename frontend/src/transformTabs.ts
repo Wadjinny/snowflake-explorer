@@ -3,6 +3,7 @@ import {
   defaultTransformLayout,
   defaultTransformName,
   makeEmptyRecipe,
+  normalizeChartConfig,
   normalizeRecipe,
   normalizeTransformLayout,
   type ChartConfig,
@@ -81,6 +82,7 @@ function normalizeTab(t: OpenTransformTab): OpenTransformTab {
   return {
     ...t,
     recipe: normalizeRecipe(t.recipe),
+    chart: normalizeChartConfig(t.chart),
     layout: normalizeTransformLayout(
       (t as OpenTransformTab & { layout?: TransformPanelLayout }).layout,
     ),
@@ -137,7 +139,7 @@ export function makeTabFromSaved(saved: SavedTransformation): OpenTransformTab {
     savedId: saved.id,
     name: saved.name,
     recipe: structuredClone(saved.recipe),
-    chart: structuredClone(saved.chart),
+    chart: normalizeChartConfig(structuredClone(saved.chart)),
     layout: normalizeTransformLayout(saved.layout),
     columnOrder: Array.isArray(saved.columnOrder)
       ? [...saved.columnOrder]

@@ -61,7 +61,8 @@ export type ChartType =
 export type ChartConfig = {
   type: ChartType
   x: string | null
-  y: string | null
+  /** One or more Y metrics (bar/line/area); single-value types use y[0]. */
+  y: string[]
   series: string | null
 }
 
@@ -288,12 +289,37 @@ function isChartType(value: unknown): value is ChartType {
 function isChartConfig(value: unknown): value is ChartConfig {
   if (!value || typeof value !== 'object') return false
   const c = value as Record<string, unknown>
+  const yOk =
+    c.y === null ||
+    typeof c.y === 'string' ||
+    (Array.isArray(c.y) && c.y.every((n) => typeof n === 'string'))
   return (
     isChartType(c.type) &&
     (c.x === null || typeof c.x === 'string') &&
-    (c.y === null || typeof c.y === 'string') &&
+    yOk &&
     (c.series === null || typeof c.series === 'string')
   )
+}
+
+/** Normalize legacy `y: string | null` to `y: string[]`. */
+export function normalizeChartConfig(chart: ChartConfig): ChartConfig {
+  const rawY = (chart as { y?: unknown }).y
+  let y: string[]
+  if (Array.isArray(rawY)) {
+    y = rawY.filter(
+      (n): n is string => typeof n === 'string' && n.length > 0,
+    )
+  } else if (typeof rawY === 'string' && rawY.length > 0) {
+    y = [rawY]
+  } else {
+    y = []
+  }
+  return {
+    type: chart.type,
+    x: chart.x,
+    y,
+    series: chart.series,
+  }
 }
 
 function isPanelLayoutMap(value: unknown): value is PanelLayoutMap {
@@ -378,7 +404,7 @@ function isSavedTransformation(value: unknown): value is SavedTransformation {
 }
 
 export function defaultChartConfig(): ChartConfig {
-  return { type: 'bar', x: null, y: null, series: null }
+  return { type: 'bar', x: null, y: [], series: null }
 }
 
 export function defaultTransformLayout(): TransformPanelLayout {
@@ -456,7 +482,7 @@ export function makeTransformation(input: {
     id: crypto.randomUUID(),
     name: input.name?.trim() || defaultTransformName(input.recipe),
     recipe: input.recipe,
-    chart: input.chart ?? defaultChartConfig(),
+    chart: normalizeChartConfig(input.chart ?? defaultChartConfig()),
     layout: normalizeTransformLayout(input.layout),
     columnOrder: Array.isArray(input.columnOrder) ? [...input.columnOrder] : [],
     columnWidths: normalizeColumnWidths(input.columnWidths),
@@ -558,6 +584,7 @@ export function loadTransformations(
     return parsed.filter(isSavedTransformation).map((t) => ({
       ...t,
       recipe: normalizeRecipe(t.recipe),
+      chart: normalizeChartConfig(t.chart),
       layout: normalizeTransformLayout(
         (t as SavedTransformation & { layout?: TransformPanelLayout }).layout,
       ),
