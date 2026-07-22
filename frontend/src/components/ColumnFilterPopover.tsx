@@ -1,5 +1,12 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { facetColumn } from '../api/snowflake'
 import type {
@@ -26,11 +33,66 @@ import Spinner from './Spinner'
 import { CheckIcon, ClearIcon, CloseIcon } from './TreeIcons'
 
 const PAGE_SIZE = 10
-const POPOVER_WIDTH = 280
+const SIZE_STORAGE_KEY = 'sf-explorer.facetPopoverSize'
+const MIN_POPOVER_WIDTH = 220
+const MAX_POPOVER_WIDTH = 640
+const MIN_POPOVER_HEIGHT = 200
+const MAX_POPOVER_HEIGHT = 720
+const DEFAULT_POPOVER_WIDTH = 280
+const DEFAULT_POPOVER_HEIGHT = 360
+
+type PopoverSize = { width: number; height: number }
+
+function clampPopoverSize(size: PopoverSize): PopoverSize {
+  return {
+    width: Math.min(
+      MAX_POPOVER_WIDTH,
+      Math.max(MIN_POPOVER_WIDTH, Math.round(size.width)),
+    ),
+    height: Math.min(
+      MAX_POPOVER_HEIGHT,
+      Math.max(MIN_POPOVER_HEIGHT, Math.round(size.height)),
+    ),
+  }
+}
+
+function loadPopoverSize(): PopoverSize {
+  try {
+    const raw = localStorage.getItem(SIZE_STORAGE_KEY)
+    if (!raw) {
+      return { width: DEFAULT_POPOVER_WIDTH, height: DEFAULT_POPOVER_HEIGHT }
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') {
+      return { width: DEFAULT_POPOVER_WIDTH, height: DEFAULT_POPOVER_HEIGHT }
+    }
+    const o = parsed as Record<string, unknown>
+    return clampPopoverSize({
+      width:
+        typeof o.width === 'number' && Number.isFinite(o.width)
+          ? o.width
+          : DEFAULT_POPOVER_WIDTH,
+      height:
+        typeof o.height === 'number' && Number.isFinite(o.height)
+          ? o.height
+          : DEFAULT_POPOVER_HEIGHT,
+    })
+  } catch {
+    return { width: DEFAULT_POPOVER_WIDTH, height: DEFAULT_POPOVER_HEIGHT }
+  }
+}
+
+function savePopoverSize(size: PopoverSize): void {
+  try {
+    localStorage.setItem(SIZE_STORAGE_KEY, JSON.stringify(size))
+  } catch {
+    // ignore quota
+  }
+}
 
 type Mode = 'values' | 'drill' | 'condition'
 
-type Pos = { top: number; left: number; maxHeight: number }
+type Pos = { top: number; left: number; height: number }
 
 type PatternOp = 'has' | 'startswith' | 'endswith'
 
@@ -102,6 +164,17 @@ export default function ColumnFilterPopover({
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Pos | null>(null)
+  const [size, setSize] = useState<PopoverSize>(() => loadPopoverSize())
+  const sizeRef = useRef(size)
+  sizeRef.current = size
+  const resizeRef = useRef<{
+    edge: 'e' | 's' | 'se'
+    startX: number
+    startY: number
+    startW: number
+    startH: number
+  } | null>(null)
+  const [resizing, setResizing] = useState(false)
   const isDateType = type === 'date' || type === 'timestamp'
   const isNumber = type === 'number'
   const hasCondition = type === 'string' || isNumber
@@ -220,18 +293,20 @@ export default function ColumnFilterPopover({
         return
       }
       const r = el.getBoundingClientRect()
+      const { width, height } = sizeRef.current
       const left = Math.max(
         8,
-        Math.min(r.right - POPOVER_WIDTH, window.innerWidth - POPOVER_WIDTH - 8),
+        Math.min(r.right - width, window.innerWidth - width - 8),
       )
       const spaceBelow = window.innerHeight - r.bottom - 8
       const spaceAbove = r.top - 8
       const placeBelow = spaceBelow >= 240 || spaceBelow >= spaceAbove
-      const maxHeight = Math.min(420, placeBelow ? spaceBelow : spaceAbove)
+      const avail = placeBelow ? spaceBelow : spaceAbove
+      const h = Math.min(height, Math.max(MIN_POPOVER_HEIGHT, avail))
       const top = placeBelow
         ? r.bottom + 4
-        : Math.max(8, r.top - maxHeight - 4)
-      setPos({ top, left, maxHeight })
+        : Math.max(8, r.top - h - 4)
+      setPos({ top, left, height: h })
     }
     update()
     window.addEventListener('resize', update)
@@ -240,7 +315,54 @@ export default function ColumnFilterPopover({
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', update, true)
     }
-  }, [anchorRef])
+  }, [anchorRef, size.width, size.height])
+
+  useEffect(() => {
+    return () => {
+      document.body.classList.remove('facet-resizing')
+    }
+  }, [])
+
+  const onResizePointerDown =
+    (edge: 'e' | 's' | 'se') => (e: ReactPointerEvent<HTMLSpanElement>) => {
+      e.preventDefault()
+      e.stopPropagation()
+      resizeRef.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        startW: size.width,
+        startH: size.height,
+      }
+      setResizing(true)
+      e.currentTarget.setPointerCapture(e.pointerId)
+      document.body.classList.add('facet-resizing')
+    }
+
+  const onResizePointerMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    const state = resizeRef.current
+    if (!state) return
+    const dx = e.clientX - state.startX
+    const dy = e.clientY - state.startY
+    const next = clampPopoverSize({
+      width:
+        state.edge === 's' ? state.startW : state.startW + dx,
+      height:
+        state.edge === 'e' ? state.startH : state.startH + dy,
+    })
+    setSize(next)
+  }
+
+  const endResize = (e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!resizeRef.current) return
+    resizeRef.current = null
+    setResizing(false)
+    document.body.classList.remove('facet-resizing')
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    savePopoverSize(sizeRef.current)
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -411,16 +533,17 @@ export default function ColumnFilterPopover({
   const body = (
     <div
       ref={rootRef}
-      className={`facet-popover${pos ? ' facet-popover-fixed' : ''}`}
-      style={
-        pos
+      className={`facet-popover${pos ? ' facet-popover-fixed' : ''}${resizing ? ' resizing' : ''}`}
+      style={{
+        width: size.width,
+        height: pos ? pos.height : size.height,
+        ...(pos
           ? {
               top: pos.top,
               left: pos.left,
-              maxHeight: pos.maxHeight,
             }
-          : undefined
-      }
+          : null),
+      }}
       role="dialog"
       aria-label={`Filter ${column}`}
       onClick={(e) => e.stopPropagation()}
@@ -466,6 +589,7 @@ export default function ColumnFilterPopover({
         </div>
       ) : null}
 
+      <div className="facet-popover-main">
       {mode === 'condition' ? (
         <div className="facet-condition">
           <div
@@ -761,6 +885,7 @@ export default function ColumnFilterPopover({
           </div>
         </>
       )}
+      </div>
 
       <div className="facet-actions">
         <button
@@ -805,6 +930,30 @@ export default function ColumnFilterPopover({
           </button>
         </div>
       </div>
+      <span
+        className="facet-resize-handle facet-resize-e"
+        onPointerDown={onResizePointerDown('e')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        title="Drag to resize width"
+      />
+      <span
+        className="facet-resize-handle facet-resize-s"
+        onPointerDown={onResizePointerDown('s')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        title="Drag to resize height"
+      />
+      <span
+        className="facet-resize-handle facet-resize-se"
+        onPointerDown={onResizePointerDown('se')}
+        onPointerMove={onResizePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        title="Drag to resize"
+      />
     </div>
   )
 

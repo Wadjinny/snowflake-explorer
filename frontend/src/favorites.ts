@@ -169,3 +169,25 @@ export function hasFavorite(list: Favorite[], fav: Favorite): boolean {
   const key = favoriteKey(fav)
   return list.some((f) => favoriteKey(f) === key)
 }
+
+/** True when a schema/object under this database (or object under this schema) is favorited. */
+export function hasFavoriteDescendant(
+  list: Favorite[],
+  parent:
+    | { kind: 'database'; database: string }
+    | { kind: 'schema'; database: string; schema: string },
+): boolean {
+  if (parent.kind === 'database') {
+    return list.some(
+      (f) =>
+        f.database === parent.database &&
+        (f.kind === 'schema' || f.kind === 'object'),
+    )
+  }
+  return list.some(
+    (f) =>
+      f.kind === 'object' &&
+      f.database === parent.database &&
+      f.schema === parent.schema,
+  )
+}

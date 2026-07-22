@@ -4,6 +4,7 @@ import { Link } from 'react-router'
 import { listDatabases, listObjects, listSchemas } from '../api/snowflake'
 import {
   buildFavoriteForest,
+  hasFavoriteDescendant,
   type Favorite,
   type FavoriteDatabaseNode,
   type FavoriteSchemaNode,
@@ -52,6 +53,11 @@ type Rails = boolean[]
 
 type FavFns = {
   isFavorite: (fav: Favorite) => boolean
+  hasFavoriteDescendant: (
+    parent:
+      | { kind: 'database'; database: string }
+      | { kind: 'schema'; database: string; schema: string },
+  ) => boolean
   onToggleFavorite: (fav: Favorite) => void
 }
 
@@ -122,7 +128,12 @@ export default function ObjectTree({
     transformations,
     remove: removeTransformation,
   } = useTransformations()
-  const favFns: FavFns = { isFavorite, onToggleFavorite: toggle }
+  const favFns: FavFns = {
+    isFavorite,
+    hasFavoriteDescendant: (parent) =>
+      hasFavoriteDescendant(favorites, parent),
+    onToggleFavorite: toggle,
+  }
   const [sections, setSections] = useState<TreeSections>(loadTreeSections)
   const [favoritesFoldEpoch, setFavoritesFoldEpoch] = useState(0)
   const [catalogFoldEpoch, setCatalogFoldEpoch] = useState(0)
@@ -757,6 +768,7 @@ function TreeRow({
   to,
   meta,
   favorited,
+  hasFavoriteChild,
   onToggleFavorite,
 }: {
   rails: Rails
@@ -772,23 +784,38 @@ function TreeRow({
   to?: string
   meta?: string
   favorited?: boolean
+  /** Parent has favorited descendants but is not favorited itself. */
+  hasFavoriteChild?: boolean
   onToggleFavorite?: () => void
 }) {
   const isRoot = rails.length === 0
-  const className = `tree-row${active ? ' active' : ''}${favorited ? ' favorited' : ''}`
+  const childHint = Boolean(hasFavoriteChild && !favorited)
+  const className = `tree-row${active ? ' active' : ''}${favorited ? ' favorited' : ''}${childHint ? ' fav-child' : ''}`
   const star = onToggleFavorite ? (
     <button
       type="button"
-      className={`tree-fav${favorited ? ' on' : ''}`}
-      aria-label={favorited ? 'Remove favorite' : 'Add favorite'}
-      title={favorited ? 'Remove favorite' : 'Add favorite'}
+      className={`tree-fav${favorited ? ' on' : ''}${childHint ? ' hint' : ''}`}
+      aria-label={
+        favorited
+          ? 'Remove favorite'
+          : childHint
+            ? 'Add favorite (has favorited children)'
+            : 'Add favorite'
+      }
+      title={
+        favorited
+          ? 'Remove favorite'
+          : childHint
+            ? 'Add favorite — a child is favorited'
+            : 'Add favorite'
+      }
       onClick={(e) => {
         e.preventDefault()
         e.stopPropagation()
         onToggleFavorite()
       }}
     >
-      <StarIcon filled={favorited} />
+      <StarIcon filled={Boolean(favorited || childHint)} />
     </button>
   ) : null
 
@@ -945,6 +972,7 @@ function DatabaseNode({
         icon={<DatabaseIcon />}
         label={database}
         favorited={favFns.isFavorite(fav)}
+        hasFavoriteChild={favFns.hasFavoriteDescendant(fav)}
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open ? (
@@ -1053,6 +1081,7 @@ function SchemaNode({
         icon={<FolderIcon open={open} />}
         label={schema}
         favorited={favFns.isFavorite(fav)}
+        hasFavoriteChild={favFns.hasFavoriteDescendant(fav)}
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open ? (
