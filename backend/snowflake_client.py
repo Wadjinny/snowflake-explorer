@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -18,6 +19,25 @@ Params = Sequence[Any] | Mapping[str, Any] | None
 
 # Reuse a live Snowflake session for this long after first open.
 POOL_TTL_SECONDS = 2 * 60 * 60
+
+# Named pyformat placeholders: %(limit)s — leave these alone when escaping.
+_PYFORMAT_PLACEHOLDER = re.compile(r"%\([^)]+\)s")
+
+
+def _escape_pyformat_literals(sql: str) -> str:
+    """Escape bare % so LIKE '%x%' survives dict pyformat binding.
+
+    The connector does ``sql % params`` for Mapping params. Literal percent
+    signs in the SQL (ILIKE wildcards, etc.) must be written as ``%%``.
+    """
+    parts: list[str] = []
+    last = 0
+    for match in _PYFORMAT_PLACEHOLDER.finditer(sql):
+        parts.append(sql[last : match.start()].replace("%", "%%"))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(sql[last:].replace("%", "%%"))
+    return "".join(parts)
 
 
 def quote_ident(name: str) -> str:
@@ -198,7 +218,13 @@ def _run_query_once(
                 if params is None:
                     cur.execute(sql)
                 else:
-                    cur.execute(sql, params)
+                    # Dict params use pyformat; escape literal % (e.g. LIKE).
+                    bound_sql = (
+                        _escape_pyformat_literals(sql)
+                        if isinstance(params, Mapping)
+                        else sql
+                    )
+                    cur.execute(bound_sql, params)
                 if cur.description:
                     columns = [desc[0] for desc in cur.description]
                     types = [map_field_type(desc[1]) for desc in cur.description]
