@@ -180,6 +180,7 @@ function isColumnFilter(value: unknown): value is ColumnFilter {
     typeof f.column === 'string' &&
     (f.type === 'string' ||
       f.type === 'number' ||
+      f.type === 'boolean' ||
       f.type === 'date' ||
       f.type === 'timestamp') &&
     Array.isArray(f.values) &&

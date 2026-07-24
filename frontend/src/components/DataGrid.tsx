@@ -275,6 +275,13 @@ export default function DataGrid({
       e.preventDefault()
       return
     }
+    // Popover is nested in the draggable <th>; don't treat in-popover
+    // pointer moves (text select, scroll scrub) as a column reorder.
+    const t = e.target
+    if (t instanceof Element && t.closest('.facet-popover')) {
+      e.preventDefault()
+      return
+    }
     didDrag.current = false
     setDragging(name)
     setOpenColumn(null)
@@ -403,7 +410,7 @@ export default function DataGrid({
                       ? `${col.type} — hidden (hover preview)`
                       : `${col.type} — drag to reorder · drag edge to resize`
                   }
-                  draggable={!dimmed && !resizePreview}
+                  draggable={!dimmed && !resizePreview && !isOpen}
                   onDragStart={(e) => onDragStart(col.name, e)}
                   onDragOver={(e) => onDragOver(col.name, e)}
                   onDragLeave={() =>

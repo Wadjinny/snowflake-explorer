@@ -60,6 +60,8 @@ def _serialize_cell(value: object) -> object:
 def _facet_label(value: object) -> str:
     if value is None:
         return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
     return str(value)
 
 

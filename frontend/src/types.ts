@@ -49,7 +49,12 @@ export type ColumnType =
   | 'geo'
   | 'other'
 
-export type FacetableType = 'string' | 'number' | 'date' | 'timestamp'
+export type FacetableType =
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'date'
+  | 'timestamp'
 
 export type ColumnInfo = {
   name: string
@@ -109,6 +114,8 @@ export const NUMBER_FILTER_OPS: FilterOp[] = [
   'is_not_null',
   'is_null',
 ]
+
+export const BOOLEAN_FILTER_OPS: FilterOp[] = ['is_not_null', 'is_null']
 
 export const FILTER_OP_LABELS: Record<FilterOp, string> = {
   in: 'Values',
@@ -242,6 +249,7 @@ export function isFacetable(type: ColumnType): type is FacetableType {
   return (
     type === 'string' ||
     type === 'number' ||
+    type === 'boolean' ||
     type === 'date' ||
     type === 'timestamp'
   )

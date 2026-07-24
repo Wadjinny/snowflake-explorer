@@ -47,7 +47,7 @@ class PreviewResult(BaseModel):
     total: int
 
 
-FacetableType = Literal["string", "number", "date", "timestamp"]
+FacetableType = Literal["string", "number", "boolean", "date", "timestamp"]
 SortDirection = Literal["asc", "desc"]
 FilterOp = Literal[
     "in",

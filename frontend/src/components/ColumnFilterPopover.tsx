@@ -17,6 +17,7 @@ import type {
   FilterValue,
 } from '../types'
 import {
+  BOOLEAN_FILTER_OPS,
   FILTER_OP_LABELS,
   filterIsActive,
   filterNeedsBounds,
@@ -177,8 +178,13 @@ export default function ColumnFilterPopover({
   const [resizing, setResizing] = useState(false)
   const isDateType = type === 'date' || type === 'timestamp'
   const isNumber = type === 'number'
-  const hasCondition = type === 'string' || isNumber
-  const conditionOps = isNumber ? NUMBER_FILTER_OPS : STRING_FILTER_OPS
+  const isBoolean = type === 'boolean'
+  const hasCondition = type === 'string' || isNumber || isBoolean
+  const conditionOps = isNumber
+    ? NUMBER_FILTER_OPS
+    : isBoolean
+      ? BOOLEAN_FILTER_OPS
+      : STRING_FILTER_OPS
 
   const valueApplied = useMemo(
     () => findApplied(appliedFilters, 'in'),
@@ -723,13 +729,15 @@ export default function ColumnFilterPopover({
         </div>
       ) : mode === 'values' ? (
         <>
-          <input
-            className="input facet-search"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search values…"
-            autoFocus
-          />
+          {!isBoolean ? (
+            <input
+              className="input facet-search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search values…"
+              autoFocus
+            />
+          ) : null}
 
           {hasOtherFilters ? (
             <label

@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from snowflake_client import quote_ident
 
-FACETABLE = frozenset({"string", "number", "date", "timestamp"})
+FACETABLE = frozenset({"string", "number", "boolean", "date", "timestamp"})
 PeriodGrain = Literal["year", "month", "week", "day"]
 
 _YEAR_RE = re.compile(r"^\d{4}$")
@@ -118,6 +118,19 @@ def sql_value_literal(value: object, col_type: str) -> str:
                 status_code=400, detail=f"Invalid number filter value: {value!r}"
             ) from exc
         return format(d, "f")
+
+    if col_type == "boolean":
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        text = str(value).strip().lower()
+        if text in ("true", "1"):
+            return "TRUE"
+        if text in ("false", "0"):
+            return "FALSE"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid boolean filter value: {value!r}",
+        )
 
     if col_type in ("date", "timestamp"):
         text = str(value)

@@ -137,6 +137,13 @@ export default function ResultTable({
       e.preventDefault()
       return
     }
+    // Popover is nested in the draggable <th>; don't treat in-popover
+    // pointer moves (text select, scroll scrub) as a column reorder.
+    const t = e.target
+    if (t instanceof Element && t.closest('.facet-popover')) {
+      e.preventDefault()
+      return
+    }
     setDragging(name)
     setOpenColumn(null)
     e.dataTransfer.effectAllowed = 'move'
@@ -281,7 +288,7 @@ export default function ResultTable({
                       : col.type
                   }
                   data-col={col.name}
-                  draggable={Boolean(onColumnOrderChange)}
+                  draggable={Boolean(onColumnOrderChange) && !isOpen}
                   onDragStart={(e) => onDragStart(col.name, e)}
                   onDragOver={(e) => onDragOver(col.name, e)}
                   onDragLeave={() =>
