@@ -13,7 +13,7 @@
 
   --text: #d4d4d4;
   --text-label: #bdbdbd;
-  --text-muted: #9d9d9d;
+  --text-muted: #c8dde7;
   --text-faint: #808080;
   --text-ghost: #6d6d6d;
 
@@ -34,14 +34,14 @@
   --mono: "SF Mono", Menlo, monospace;
 
   /* Soft type colors for cell values (pastel / low-chroma on dark) */
-  --type-number: #9db8a6;
-  --type-string: #c2c6ce;
-  --type-boolean: #b8adc8;
-  --type-date: #cbb894;
-  --type-time: #cbb894;
-  --type-timestamp: #d0bc96;
+  --type-number: #4bdb7b;
+  --type-string: #d4d4d2;
+  --type-boolean: #e254ac;
+  --type-date: #9ac6f0;
+  --type-time: #a1ecff;
+  --type-timestamp: #68d9ec;
   --type-binary: #c4a4aa;
-  --type-semi: #97b4bc;
+  --type-semi: #ffb035;
   --type-geo: #9ab6c4;
   --type-other: #a0a0a0;
   --type-null: #6a6a6a;

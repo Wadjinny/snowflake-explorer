@@ -15,6 +15,7 @@ import {
   type TransformPanelLayout,
   type TransformRecipe,
 } from './transformations'
+import { getDefaultPageSize } from './pageSizePrefs'
 
 type TransformationsContextValue = {
   transformations: SavedTransformation[]
@@ -131,7 +132,7 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
       layout: structuredClone(src.layout),
       columnOrder: [...(src.columnOrder ?? [])],
       columnWidths: { ...(src.columnWidths ?? {}) },
-      pageSize: src.pageSize ?? 100,
+      pageSize: src.pageSize ?? getDefaultPageSize(),
     })
   }
 

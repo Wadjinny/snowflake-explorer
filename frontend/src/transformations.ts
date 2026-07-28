@@ -9,6 +9,7 @@ import {
   isColumnWidthsRecord,
   normalizeColumnWidths,
 } from './openTabs'
+import { clampPageSize, getDefaultPageSize, PAGE_SIZE_MAX } from './pageSizePrefs'
 
 export type JoinType = 'inner' | 'left' | 'right' | 'full'
 
@@ -477,8 +478,8 @@ export function makeTransformation(input: {
 }): SavedTransformation {
   const pageSize =
     typeof input.pageSize === 'number' && Number.isFinite(input.pageSize)
-      ? Math.min(5000, Math.max(1, Math.floor(input.pageSize)))
-      : 100
+      ? clampPageSize(input.pageSize, PAGE_SIZE_MAX)
+      : getDefaultPageSize()
   return {
     id: crypto.randomUUID(),
     name: input.name?.trim() || defaultTransformName(input.recipe),
@@ -593,8 +594,8 @@ export function loadTransformations(
       columnWidths: normalizeColumnWidths(t.columnWidths),
       pageSize:
         typeof t.pageSize === 'number' && Number.isFinite(t.pageSize)
-          ? Math.min(5000, Math.max(1, Math.floor(t.pageSize)))
-          : 100,
+          ? clampPageSize(t.pageSize, PAGE_SIZE_MAX)
+          : getDefaultPageSize(),
     }))
   } catch {
     return []

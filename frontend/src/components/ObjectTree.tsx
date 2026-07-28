@@ -19,6 +19,7 @@ import {
 import { useSelections } from '../selectionsContext'
 import type { SavedTransformation } from '../transformations'
 import { useTransformations } from '../transformationsContext'
+import { usePruneStaleFavorites } from '../usePruneStaleFavorites'
 import type {
   Connection,
   ObjectItem,
@@ -122,7 +123,7 @@ export default function ObjectTree({
   activeTransformId = null,
   onOpenTransformation,
 }: Props) {
-  const { favorites, isFavorite, toggle } = useFavorites()
+  const { favorites, isFavorite, toggle, replace } = useFavorites()
   const { selections, remove: removeSelection } = useSelections()
   const {
     transformations,
@@ -152,6 +153,8 @@ export default function ObjectTree({
     queryKey: ['databases', connection.id],
     queryFn: () => listDatabases(connection),
   })
+
+  usePruneStaleFavorites(connection, favorites, replace, databases.data)
 
   if (databases.isLoading) {
     return (

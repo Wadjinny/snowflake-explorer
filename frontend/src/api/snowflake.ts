@@ -11,6 +11,7 @@ import type {
   PreviewResult,
   SortSpec,
 } from '../types'
+import { getDefaultPageSize } from '../pageSizePrefs'
 
 function encodeConnectionHeader(connection: Connection): string {
   const payload = {
@@ -184,7 +185,7 @@ export function runTransform(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       recipe,
-      limit: opts.limit ?? 100,
+      limit: opts.limit ?? getDefaultPageSize(),
       offset: opts.offset ?? 0,
     }),
   })

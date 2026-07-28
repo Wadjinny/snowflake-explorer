@@ -12,6 +12,11 @@ import {
   type TransformRecipe,
 } from './transformations'
 import { normalizeColumnWidths, isColumnWidthsRecord } from './openTabs'
+import {
+  clampPageSize,
+  getDefaultPageSize,
+  PAGE_SIZE_MAX,
+} from './pageSizePrefs'
 import type { SelectedObject } from './types'
 
 /** Session-only open transform (draft). URL uses `id`. */
@@ -34,18 +39,15 @@ export type OpenTransformTab = {
   dirty: boolean
 }
 
-export const DEFAULT_PAGE_SIZE = 100
-const PAGE_SIZE_MAX = 5000
-
 function storageKey(connectionId: string): string {
   return `sf-explorer.transformTabs:${connectionId}`
 }
 
 function normalizePageSize(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_PAGE_SIZE
+    return getDefaultPageSize()
   }
-  return Math.min(PAGE_SIZE_MAX, Math.max(1, Math.floor(value)))
+  return clampPageSize(value, PAGE_SIZE_MAX)
 }
 
 function isOpenTransformTab(value: unknown): value is OpenTransformTab {
@@ -127,7 +129,7 @@ export function makeDraftTab(source: SelectedObject): OpenTransformTab {
     layout: defaultTransformLayout(),
     columnOrder: [],
     columnWidths: {},
-    pageSize: DEFAULT_PAGE_SIZE,
+    pageSize: getDefaultPageSize(),
     offset: 0,
     dirty: true,
   }

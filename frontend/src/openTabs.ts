@@ -1,4 +1,5 @@
 import type { ColumnFilter, SelectedObject, SortSpec } from './types'
+import { BROWSE_PAGE_SIZE_MAX, getDefaultPageSize } from './pageSizePrefs'
 import { objectKeyFrom } from './paths'
 
 export type OpenTab = {
@@ -15,8 +16,6 @@ export type OpenTab = {
   /** Per-column pixel widths; missing = default. */
   columnWidths: Record<string, number>
 }
-
-const DEFAULT_LIMIT = 100
 
 function storageKey(connectionId: string): string {
   return `sf-explorer.tabs:${connectionId}`
@@ -95,7 +94,7 @@ export function makeTab(object: SelectedObject): OpenTab {
     object,
     filters: [],
     sort: null,
-    limit: DEFAULT_LIMIT,
+    limit: getDefaultPageSize(BROWSE_PAGE_SIZE_MAX),
     offset: 0,
     hiddenColumns: [],
     columnOrder: [],

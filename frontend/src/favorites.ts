@@ -170,6 +170,46 @@ export function hasFavorite(list: Favorite[], fav: Favorite): boolean {
   return list.some((f) => favoriteKey(f) === key)
 }
 
+/** True when both lists contain the same favorites (order ignored). */
+export function favoritesEqual(a: Favorite[], b: Favorite[]): boolean {
+  if (a.length !== b.length) return false
+  const keys = new Set(a.map(favoriteKey))
+  return b.every((f) => keys.has(favoriteKey(f)))
+}
+
+/**
+ * Drop favorites that are missing from known catalog slices.
+ * Only levels with a provided set are checked (so partial loads are safe).
+ */
+export function pruneMissingFavorites(
+  list: Favorite[],
+  catalog: {
+    databases?: ReadonlySet<string>
+    /** database → schema names */
+    schemasByDatabase?: ReadonlyMap<string, ReadonlySet<string>>
+    /** `${database}\0${schema}` → object names */
+    objectsBySchema?: ReadonlyMap<string, ReadonlySet<string>>
+  },
+): Favorite[] {
+  const { databases, schemasByDatabase, objectsBySchema } = catalog
+  return list.filter((fav) => {
+    if (databases && !databases.has(fav.database)) return false
+
+    if (fav.kind === 'schema' || fav.kind === 'object') {
+      const schemas = schemasByDatabase?.get(fav.database)
+      if (schemas && !schemas.has(fav.schema)) return false
+    }
+
+    if (fav.kind === 'object') {
+      const key = `${fav.database}\0${fav.schema}`
+      const objects = objectsBySchema?.get(key)
+      if (objects && !objects.has(fav.name)) return false
+    }
+
+    return true
+  })
+}
+
 /** True when a schema/object under this database (or object under this schema) is favorited. */
 export function hasFavoriteDescendant(
   list: Favorite[],

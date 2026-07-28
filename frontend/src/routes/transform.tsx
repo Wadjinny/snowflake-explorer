@@ -44,8 +44,9 @@ import {
   type TransformRecipe,
 } from '../transformations'
 import { useTransformations } from '../transformationsContext'
-import { TRANSFORM_HOME, transformPath, DEFAULT_PAGE_SIZE } from '../transformTabs'
+import { TRANSFORM_HOME, transformPath } from '../transformTabs'
 import { useTransformTabs } from '../transformTabsContext'
+import { getDefaultPageSize, setDefaultPageSize } from '../pageSizePrefs'
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 
@@ -146,7 +147,7 @@ export default function TransformWorkspace() {
       vars: { offset?: number; pageSize?: number } = {},
     ) => {
       if (!active || !recipe || !tab) throw new Error('No recipe')
-      const pageSize = vars.pageSize ?? tab.pageSize ?? DEFAULT_PAGE_SIZE
+      const pageSize = vars.pageSize ?? tab.pageSize ?? getDefaultPageSize()
       const offset = vars.offset ?? tab.offset ?? 0
       return runTransform(
         active,
@@ -181,7 +182,7 @@ export default function TransformWorkspace() {
     }
     runMutRef.current.mutate({
       offset: tab.offset ?? 0,
-      pageSize: tab.pageSize ?? DEFAULT_PAGE_SIZE,
+      pageSize: tab.pageSize ?? getDefaultPageSize(),
     })
   }, [autoRun, tab, active, recipe?.source.name, location.key, navigate])
 
@@ -237,8 +238,9 @@ export default function TransformWorkspace() {
 
   const setPage = (next: { pageSize?: number; offset: number }) => {
     if (!tab) return
-    const pageSize = next.pageSize ?? tab.pageSize ?? DEFAULT_PAGE_SIZE
+    const pageSize = next.pageSize ?? tab.pageSize ?? getDefaultPageSize()
     const offset = Math.max(0, next.offset)
+    if (next.pageSize !== undefined) setDefaultPageSize(pageSize)
     updateTab(tab.id, {
       ...(next.pageSize !== undefined ? { pageSize } : {}),
       offset,
@@ -286,7 +288,7 @@ export default function TransformWorkspace() {
     const layoutToSave = normalizeTransformLayout(tab.layout)
     const columnOrderToSave = tab.columnOrder ?? []
     const columnWidthsToSave = tab.columnWidths ?? {}
-    const pageSizeToSave = tab.pageSize ?? DEFAULT_PAGE_SIZE
+    const pageSizeToSave = tab.pageSize ?? getDefaultPageSize()
     if (tab.savedId) {
       updateSaved(tab.savedId, {
         name: tab.name,
@@ -346,7 +348,7 @@ export default function TransformWorkspace() {
       layout: structuredClone(normalizeTransformLayout(tab.layout)),
       columnOrder: [...(tab.columnOrder ?? [])],
       columnWidths: { ...(tab.columnWidths ?? {}) },
-      pageSize: tab.pageSize ?? DEFAULT_PAGE_SIZE,
+      pageSize: tab.pageSize ?? getDefaultPageSize(),
       offset: 0,
       dirty: true,
       savedId: null,
@@ -470,7 +472,7 @@ export default function TransformWorkspace() {
 
   const isSaved = Boolean(tab.savedId)
   const saveLabel = !isSaved ? 'Save' : tab.dirty ? 'Save' : 'Saved'
-  const pageLimit = tab.pageSize ?? DEFAULT_PAGE_SIZE
+  const pageLimit = tab.pageSize ?? getDefaultPageSize()
   const pageOffset = tab.offset ?? 0
   const pageFrom = result ? pageOffset + (result.rows.length > 0 ? 1 : 0) : 0
   const pageTo = result ? pageOffset + result.rows.length : 0

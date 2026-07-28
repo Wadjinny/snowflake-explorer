@@ -28,6 +28,11 @@ import {
   upsertTab,
   type OpenTab,
 } from '../openTabs'
+import {
+  BROWSE_PAGE_SIZE_MAX,
+  getDefaultPageSize,
+  setDefaultPageSize,
+} from '../pageSizePrefs'
 import { objectKeyFrom, objectPathFrom, objectTitle } from '../paths'
 import {
   defaultSelectionName,
@@ -45,7 +50,7 @@ import type {
 } from '../types'
 import { filterIsActive } from '../types'
 
-const PAGE_SIZES = [50, 100, 200, 500]
+const PAGE_SIZES = [50, 100, 200, 500, 1000]
 
 function useSelectedFromUrl(): SelectedObject | null {
   const params = useParams()
@@ -212,7 +217,7 @@ export default function Explorer() {
   const selected = activeTab?.object ?? urlObject
   const filters = activeTab?.filters ?? []
   const sort = activeTab?.sort ?? null
-  const limit = activeTab?.limit ?? 100
+  const limit = activeTab?.limit ?? getDefaultPageSize(BROWSE_PAGE_SIZE_MAX)
   const offset = activeTab?.offset ?? 0
   const hiddenColumns = activeTab?.hiddenColumns ?? []
   const columnOrder = activeTab?.columnOrder ?? []
@@ -307,6 +312,9 @@ export default function Explorer() {
   const to = offset + rowCount
   const canPrev = offset > 0
   const canNext = total < 0 ? rowCount >= limit : offset + rowCount < total
+  const pageSizeOptions = PAGE_SIZES.includes(limit)
+    ? PAGE_SIZES
+    : [...PAGE_SIZES, limit].sort((a, b) => a - b)
   const filterCount = filters.filter(filterIsActive).length
   const totalLabel =
     total < 0 ? '?' : total.toLocaleString()
@@ -556,13 +564,15 @@ export default function Explorer() {
                           className="select"
                           value={limit}
                           onChange={(e) => {
+                            const nextLimit = Number(e.target.value)
+                            setDefaultPageSize(nextLimit)
                             updateActiveTab({
-                              limit: Number(e.target.value),
+                              limit: nextLimit,
                               offset: 0,
                             })
                           }}
                         >
-                          {PAGE_SIZES.map((size) => (
+                          {pageSizeOptions.map((size) => (
                             <option key={size} value={size}>
                               {size}
                             </option>
