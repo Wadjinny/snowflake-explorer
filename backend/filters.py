@@ -380,17 +380,10 @@ def build_filter_clause(
                     period_predicate(ident, str(v), col_type="timestamp")
                 )
         elif col_type == "date":
-            days: list[str] = []
             for v in non_null:
                 text = str(v)
-                grain = classify_date_token(text)
-                if grain == "day":
-                    days.append(text)
-                else:
-                    parts.append(period_predicate(expr, text, col_type="date"))
-            if days:
-                literals = ", ".join(sql_value_literal(d, col_type) for d in days)
-                parts.append(f"{expr} IN ({literals})")
+                # Prefer half-open ranges so planners can prune; avoid CAST wraps.
+                parts.append(period_predicate(expr, text, col_type="date"))
         else:
             literals = ", ".join(sql_value_literal(v, col_type) for v in non_null)
             parts.append(f"{expr} IN ({literals})")
@@ -477,8 +470,15 @@ def build_period_facet_sql(
     *,
     clip: str | None = None,
     extra_where: str | None = None,
+    range_expr: str | None = None,
 ) -> str:
-    """Return SQL selecting (value_token, count) for a period grain."""
+    """Return SQL selecting (value_token, count) for a period grain.
+
+    *expr* is used in SELECT/GROUP BY (may be CAST(... AS DATE)).
+    *range_expr* (default *expr*) is used in WHERE bounds so timestamps can
+    prune on the bare column.
+    """
+    bound = range_expr if range_expr is not None else expr
     clauses: list[str] = []
     if extra_where:
         clauses.append(f"({extra_where})")
@@ -501,7 +501,11 @@ def build_period_facet_sql(
                 status_code=400, detail="month grain requires parent YYYY"
             )
         y = int(parent)
-        clauses.append(f"YEAR({expr}) = {y}")
+        # YEAR(CAST(ts AS DATE)) wraps the column; use calendar bounds on bare col.
+        start = date(y, 1, 1)
+        end = date(y + 1, 1, 1)
+        clauses.append(f"{bound} >= {_sql_date(start)}")
+        clauses.append(f"{bound} < {_sql_date(end)}")
         where = f" WHERE {' AND '.join(clauses)}"
         return (
             f"SELECT CONCAT('{y}-', LPAD(TO_VARCHAR(MONTH({expr})), 2, '0')) "
@@ -520,8 +524,8 @@ def build_period_facet_sql(
         y, m = int(parent[:4]), int(parent[5:7])
         start = date(y, m, 1)
         end = next_month_start(y, m)
-        clauses.append(f"{expr} >= {_sql_date(start)}")
-        clauses.append(f"{expr} < {_sql_date(end)}")
+        clauses.append(f"{bound} >= {_sql_date(start)}")
+        clauses.append(f"{bound} < {_sql_date(end)}")
         where = f" WHERE {' AND '.join(clauses)}"
         return (
             f"SELECT CONCAT("
@@ -544,8 +548,8 @@ def build_period_facet_sql(
         wy, ww = int(wm.group(1)), int(wm.group(2))
         w_start = iso_week_start(wy, ww)
         w_end = w_start + timedelta(days=7)
-        clauses.append(f"{expr} >= {_sql_date(w_start)}")
-        clauses.append(f"{expr} < {_sql_date(w_end)}")
+        clauses.append(f"{bound} >= {_sql_date(w_start)}")
+        clauses.append(f"{bound} < {_sql_date(w_end)}")
         if clip is not None:
             if not _MONTH_RE.match(clip):
                 raise HTTPException(
@@ -554,8 +558,8 @@ def build_period_facet_sql(
             cy, cm = int(clip[:4]), int(clip[5:7])
             c_start = date(cy, cm, 1)
             c_end = next_month_start(cy, cm)
-            clauses.append(f"{expr} >= {_sql_date(c_start)}")
-            clauses.append(f"{expr} < {_sql_date(c_end)}")
+            clauses.append(f"{bound} >= {_sql_date(c_start)}")
+            clauses.append(f"{bound} < {_sql_date(c_end)}")
         where = f" WHERE {' AND '.join(clauses)}"
         return (
             f"SELECT TO_VARCHAR({expr}) AS value, COUNT(*) AS cnt "
@@ -573,8 +577,8 @@ def build_period_facet_sql(
         y, m, d = int(parent[:4]), int(parent[5:7]), int(parent[8:10])
         start = datetime(y, m, d)
         end = start + timedelta(days=1)
-        clauses.append(f"{expr} >= {_sql_ts(start)}")
-        clauses.append(f"{expr} < {_sql_ts(end)}")
+        clauses.append(f"{bound} >= {_sql_ts(start)}")
+        clauses.append(f"{bound} < {_sql_ts(end)}")
         where = f" WHERE {' AND '.join(clauses)}"
         return (
             f"SELECT CONCAT("

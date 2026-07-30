@@ -4,9 +4,12 @@ import { Link } from 'react-router'
 import { listDatabases, listObjects } from '../api/snowflake'
 import {
   CATALOG_STALE_MS,
+  databasesQueryKey,
+  objectsQueryKey,
   schemasInDatabase,
   useAllSchemas,
 } from '../catalogSchemas'
+import { queryGcTime } from '../queryStale'
 import {
   buildFavoriteForest,
   hasFavoriteDescendant,
@@ -155,9 +158,10 @@ export default function ObjectTree({
   }
 
   const databases = useQuery({
-    queryKey: ['databases', connection.id],
+    queryKey: databasesQueryKey(connection.id),
     queryFn: () => listDatabases(connection),
     staleTime: CATALOG_STALE_MS,
+    gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 
   // Eager account-wide schemas (shared with DatabaseNode / favorites prune).
@@ -1040,10 +1044,11 @@ function SchemaNode({
   const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
   useCollapseOnFold(foldEpoch, setOpen)
   const objects = useQuery({
-    queryKey: ['objects', connection.id, database, schema],
+    queryKey: objectsQueryKey(connection.id, database, schema),
     queryFn: () => listObjects(connection, database, schema),
     enabled: open,
     staleTime: CATALOG_STALE_MS,
+    gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 
   useEffect(() => {

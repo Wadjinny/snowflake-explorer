@@ -1,5 +1,6 @@
 import { useIsFetching, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
+import { invalidateCatalog } from '../api/snowflake'
 import type { SavedSelection } from '../selections'
 import { TRANSFORM_HOME } from '../transformTabs'
 import type { Connection, SelectedObject } from '../types'
@@ -46,9 +47,22 @@ export default function ObjectsPanel({
 
   const refreshTree = () => {
     if (!connection) return
-    void queryClient.invalidateQueries({ queryKey: ['databases', connection.id] })
-    void queryClient.invalidateQueries({ queryKey: ['all-schemas', connection.id] })
-    void queryClient.invalidateQueries({ queryKey: ['objects', connection.id] })
+    void (async () => {
+      try {
+        await invalidateCatalog(connection)
+      } catch {
+        // Still refetch; backend cache may still apply.
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ['databases', connection.id],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['all-schemas', connection.id],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['objects', connection.id],
+      })
+    })()
   }
 
   return (

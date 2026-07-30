@@ -3,7 +3,8 @@ from snowflake.connector.errors import Error as SnowflakeError
 
 from deps import get_connection
 from models import NameItem, ObjectItem, SchemaItem, SnowflakeConnection
-from snowflake_client import fqn, run_query, snowflake_error_detail
+from query_cache import catalog_cache
+from snowflake_client import credentials_hash, fqn, run_query, snowflake_error_detail
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -16,10 +17,28 @@ def _col_index(columns: list[str], *names: str) -> int:
     raise KeyError(f"column not found: {names}")
 
 
+def _cache_key(cfg: SnowflakeConnection, *parts: str) -> str:
+    return "cat:" + ":".join((credentials_hash(cfg), *parts))
+
+
+@router.post("/catalog/invalidate")
+def invalidate_catalog(
+    cfg: SnowflakeConnection = Depends(get_connection),
+) -> dict[str, bool]:
+    """Drop cached SHOW / INFORMATION_SCHEMA results for this connection."""
+    catalog_cache.clear_prefix(f"cat:{credentials_hash(cfg)}:")
+    return {"ok": True}
+
+
 @router.get("/databases", response_model=list[NameItem])
 def list_databases(
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> list[NameItem]:
+    key = _cache_key(cfg, "databases")
+    cached = catalog_cache.get(key)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
     try:
         columns, rows = run_query(cfg, "SHOW DATABASES")
     except SnowflakeError as exc:
@@ -33,7 +52,9 @@ def list_databases(
     names = sorted(
         {str(row[name_i]) for row in rows if len(row) > name_i}
     )
-    return [NameItem(name=n) for n in names]
+    items = [NameItem(name=n) for n in names]
+    catalog_cache.set(key, items)
+    return items
 
 
 @router.get("/schemas", response_model=list[SchemaItem])
@@ -41,6 +62,11 @@ def list_all_schemas(
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> list[SchemaItem]:
     """All schemas visible in the account (one SHOW; group by database client-side)."""
+    key = _cache_key(cfg, "schemas")
+    cached = catalog_cache.get(key)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
     try:
         columns, rows = run_query(cfg, "SHOW TERSE SCHEMAS IN ACCOUNT")
     except SnowflakeError as exc:
@@ -63,12 +89,13 @@ def list_all_schemas(
             continue
         database = str(row[db_i])
         name = str(row[name_i])
-        key = (database, name)
-        if key in seen:
+        pair = (database, name)
+        if pair in seen:
             continue
-        seen.add(key)
+        seen.add(pair)
         items.append(SchemaItem(database=database, name=name))
     items.sort(key=lambda s: (s.database, s.name))
+    catalog_cache.set(key, items)
     return items
 
 
@@ -77,6 +104,11 @@ def list_schemas(
     db: str,
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> list[NameItem]:
+    key = _cache_key(cfg, "db-schemas", db.upper())
+    cached = catalog_cache.get(key)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
     try:
         columns, rows = run_query(cfg, f"SHOW SCHEMAS IN DATABASE {fqn(db)}")
     except SnowflakeError as exc:
@@ -90,7 +122,9 @@ def list_schemas(
     names = sorted(
         {str(row[name_i]) for row in rows if len(row) > name_i}
     )
-    return [NameItem(name=n) for n in names]
+    items = [NameItem(name=n) for n in names]
+    catalog_cache.set(key, items)
+    return items
 
 
 @router.get(
@@ -102,6 +136,11 @@ def list_objects(
     schema: str,
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> list[ObjectItem]:
+    key = _cache_key(cfg, "objects", db.upper(), schema.upper())
+    cached = catalog_cache.get(key)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
     sql = f"""
         SELECT TABLE_NAME, TABLE_TYPE, ROW_COUNT
         FROM {fqn(db)}.INFORMATION_SCHEMA.TABLES
@@ -126,4 +165,5 @@ def list_objects(
             except (TypeError, ValueError):
                 count = None
         items.append(ObjectItem(name=str(name), kind=kind, row_count=count))
+    catalog_cache.set(key, items)
     return items

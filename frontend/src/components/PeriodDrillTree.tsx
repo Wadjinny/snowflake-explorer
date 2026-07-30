@@ -1,6 +1,7 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { facetPeriods } from '../api/snowflake'
+import { FACET_STALE_MS, queryGcTime } from '../queryStale'
 import type {
   ColumnFilter,
   Connection,
@@ -82,6 +83,8 @@ export default function PeriodDrillTree({
         null,
       ),
     placeholderData: keepPreviousData,
+    staleTime: FACET_STALE_MS,
+    gcTime: queryGcTime(FACET_STALE_MS),
   })
 
   const toggleExpand = (key: string) => {
@@ -215,6 +218,8 @@ function PeriodTreeNode({
         clip,
       ),
     placeholderData: keepPreviousData,
+    staleTime: FACET_STALE_MS,
+    gcTime: queryGcTime(FACET_STALE_MS),
     enabled: isOpen && canExpand,
   })
 

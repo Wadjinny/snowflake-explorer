@@ -1,12 +1,24 @@
 import { useQuery } from '@tanstack/react-query'
 import { listAllSchemas } from './api/snowflake'
+import { CATALOG_STALE_MS, queryGcTime } from './queryStale'
 import type { Connection, NameItem, SchemaItem } from './types'
 
-/** Catalog lists change rarely; keep account-wide schema data across expands. */
-export const CATALOG_STALE_MS = 5 * 60 * 1000
+export { CATALOG_STALE_MS } from './queryStale'
 
 export function allSchemasQueryKey(connectionId: string) {
   return ['all-schemas', connectionId] as const
+}
+
+export function databasesQueryKey(connectionId: string) {
+  return ['databases', connectionId] as const
+}
+
+export function objectsQueryKey(
+  connectionId: string,
+  database: string,
+  schema: string,
+) {
+  return ['objects', connectionId, database, schema] as const
 }
 
 export function useAllSchemas(connection: Connection) {
@@ -14,6 +26,7 @@ export function useAllSchemas(connection: Connection) {
     queryKey: allSchemasQueryKey(connection.id),
     queryFn: () => listAllSchemas(connection),
     staleTime: CATALOG_STALE_MS,
+    gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 }
 

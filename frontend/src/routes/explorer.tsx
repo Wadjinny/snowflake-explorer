@@ -19,6 +19,7 @@ import {
   StarIcon,
   TransformIcon,
 } from '../components/TreeIcons'
+import { PREVIEW_STALE_MS, queryGcTime } from '../queryStale'
 import { useConnections } from '../connections'
 import { useDialog } from '../dialog'
 import { useFavorites } from '../favoritesContext'
@@ -373,6 +374,8 @@ export default function Explorer() {
       )
     },
     enabled: Boolean(active && selected),
+    staleTime: PREVIEW_STALE_MS,
+    gcTime: queryGcTime(PREVIEW_STALE_MS),
     // Keep prior rows only when paging/filtering the same table — not when switching objects.
     placeholderData: (previousData, previousQuery) => {
       const prevKey = previousQuery?.queryKey

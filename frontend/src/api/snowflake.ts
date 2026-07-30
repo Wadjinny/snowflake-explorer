@@ -68,6 +68,12 @@ export function testConnection(connection: Connection): Promise<{ ok: boolean }>
   return apiFetch(connection, '/api/connection/test', { method: 'POST' })
 }
 
+export function invalidateCatalog(
+  connection: Connection,
+): Promise<{ ok: boolean }> {
+  return apiFetch(connection, '/api/catalog/invalidate', { method: 'POST' })
+}
+
 export function listDatabases(connection: Connection): Promise<NameItem[]> {
   return apiFetch(connection, '/api/databases')
 }

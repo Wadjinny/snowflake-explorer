@@ -4,9 +4,12 @@ import { createPortal } from 'react-dom'
 import { listDatabases, listObjects } from '../api/snowflake'
 import {
   CATALOG_STALE_MS,
+  databasesQueryKey,
+  objectsQueryKey,
   schemasInDatabase,
   useAllSchemas,
 } from '../catalogSchemas'
+import { queryGcTime } from '../queryStale'
 import type { Connection, ObjectItem, SelectedObject } from '../types'
 import Spinner from './Spinner'
 import {
@@ -52,9 +55,10 @@ export default function TablePicker({
   )
 
   const databases = useQuery({
-    queryKey: ['databases', connection.id],
+    queryKey: databasesQueryKey(connection.id),
     queryFn: () => listDatabases(connection),
     staleTime: CATALOG_STALE_MS,
+    gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 
   useLayoutEffect(() => {
@@ -340,8 +344,10 @@ function ObjectBranch({
   onPick: (next: SelectedObject) => void
 }) {
   const objects = useQuery({
-    queryKey: ['objects', connection.id, database, schema],
+    queryKey: objectsQueryKey(connection.id, database, schema),
     queryFn: () => listObjects(connection, database, schema),
+    staleTime: CATALOG_STALE_MS,
+    gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 
   const filtered = useMemo(() => {

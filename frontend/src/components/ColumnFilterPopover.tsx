@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { facetColumn } from '../api/snowflake'
+import { FACET_STALE_MS, queryGcTime } from '../queryStale'
 import type {
   ColumnFilter,
   Connection,
@@ -449,6 +450,8 @@ export default function ColumnFilterPopover({
         scopedFilters,
       ),
     placeholderData: keepPreviousData,
+    staleTime: FACET_STALE_MS,
+    gcTime: queryGcTime(FACET_STALE_MS),
     enabled: mode === 'values',
   })
 

@@ -1,14 +1,18 @@
+import hashlib
+import json
 import logging
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from snowflake.connector.errors import Error as SnowflakeError
 
+from columns import ColumnMeta, describe_columns, is_account_usage
 from deps import get_connection
 from filters import (
     FACETABLE,
     build_period_facet_sql,
     build_where,
+    column_ident,
     facet_expr,
     period_label,
     serialize_facet_value,
@@ -25,7 +29,9 @@ from models import (
     PreviewResult,
     SnowflakeConnection,
 )
+from query_cache import facet_cache
 from snowflake_client import (
+    credentials_hash,
     fqn,
     quote_ident,
     run_query,
@@ -37,9 +43,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["data"])
 
-# Types that are unsafe/huge to pull raw in a grid preview.
-_STUB_TYPES = frozenset({"binary", "geo"})
 _MAX_CELL_CHARS = 2_000
+# Fetch this many facet groups once; serve OFFSET pages from cache.
+_FACET_FETCH_CAP = 200
+_SAMPLE_PCT = 1.0
 
 
 def _serialize_cell(value: object) -> object:
@@ -72,21 +79,31 @@ def _order_clause(sort_column: str | None, direction: str | None) -> str:
     return f" ORDER BY {quote_ident(sort_column)} {dir_sql} NULLS LAST"
 
 
-def _preview_select_sql(table: str, names: list[str], types: list[str]) -> str:
-    """Build a SELECT list that stubs/truncates heavy columns for the grid."""
+def _needs_sql_truncate(meta: ColumnMeta) -> bool:
+    if meta.type == "semi":
+        return True
+    if meta.type != "string":
+        return False
+    # Unknown / max-width VARCHAR may hold huge text (base64, JSON dumps).
+    if meta.char_length is None:
+        return True
+    return meta.char_length > _MAX_CELL_CHARS
+
+
+def _preview_select_sql(table: str, columns: list[ColumnMeta]) -> str:
+    """Build a SELECT list that stubs/truncates only heavy columns."""
     parts: list[str] = []
-    for name, typ in zip(names, types, strict=True):
-        ident = quote_ident(name)
-        if typ == "binary":
+    for meta in columns:
+        ident = quote_ident(meta.name)
+        if meta.type == "binary":
             parts.append(
                 "CONCAT('[binary ', "
                 f"COALESCE(TO_VARCHAR(OCTET_LENGTH({ident})), '?'), "
                 f"' bytes]') AS {ident}"
             )
-        elif typ == "geo":
+        elif meta.type == "geo":
             parts.append(f"TO_VARCHAR({ident}) AS {ident}")
-        elif typ in ("string", "semi"):
-            # Cap payload size (e.g. base64 images stored as TEXT/VARIANT).
+        elif _needs_sql_truncate(meta):
             parts.append(
                 f"LEFT(TO_VARCHAR({ident}), {_MAX_CELL_CHARS}) AS {ident}"
             )
@@ -97,10 +114,32 @@ def _preview_select_sql(table: str, names: list[str], types: list[str]) -> str:
     return f"SELECT {', '.join(parts)} FROM {table}"
 
 
+def _approx_count_sql(table: str, where: str) -> str:
+    """1% Bernoulli sample, extrapolated. Cheap relative to full COUNT on AU."""
+    return (
+        f"SELECT CAST(ROUND(COUNT(*) * (100.0 / {_SAMPLE_PCT})) AS INTEGER) "
+        f"AS cnt FROM {table} SAMPLE BERNOULLI ({_SAMPLE_PCT}){where}"
+    )
+
+
 def _http_snowflake(exc: SnowflakeError) -> HTTPException:
     detail = snowflake_error_detail(exc)
     logger.warning("Snowflake error: %s", detail)
     return HTTPException(status_code=502, detail=detail)
+
+
+def _filters_fingerprint(filters: list[Any]) -> str:
+    payload = [
+        {
+            "column": f.column,
+            "type": f.type,
+            "op": f.op,
+            "values": f.values,
+        }
+        for f in filters
+    ]
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 @router.post(
@@ -123,14 +162,14 @@ def preview_object(
         body.sort.direction if body.sort else None,
     )
 
-    # Probe columns without fetching row payloads (avoids loading BINARY blobs).
     try:
-        names, types, _ = run_query_typed(cfg, f"SELECT * FROM {table} LIMIT 0")
+        meta = describe_columns(cfg, db, schema, name)
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
-    from_sql = _preview_select_sql(table, names, types)
-    count_sql = f"SELECT COUNT(*) AS cnt FROM {table}{where}"
+    names = [c.name for c in meta]
+    types = [c.type for c in meta]
+    from_sql = _preview_select_sql(table, meta)
     data_sql = (
         f"{from_sql}"
         f"{where}"
@@ -138,12 +177,21 @@ def preview_object(
         "LIMIT %(limit)s OFFSET %(offset)s"
     )
 
+    heavy = is_account_usage(db, schema)
     total = 0
     try:
-        _, count_rows = run_query(cfg, count_sql)
-        total = int(count_rows[0][0]) if count_rows else 0
+        if heavy and where:
+            # Filtered exact COUNT on AU is multi-second; SAMPLE+WHERE is biased
+            # (sample applied before filter). UI already handles total < 0 as "?".
+            total = -1
+        elif heavy:
+            _, count_rows = run_query(cfg, _approx_count_sql(table, ""))
+            total = int(count_rows[0][0]) if count_rows else 0
+        else:
+            count_sql = f"SELECT COUNT(*) AS cnt FROM {table}{where}"
+            _, count_rows = run_query(cfg, count_sql)
+            total = int(count_rows[0][0]) if count_rows else 0
     except SnowflakeError as exc:
-        # Still try to return rows if COUNT fails (e.g. broken view stats).
         logger.warning(
             "COUNT failed for %s: %s", table, snowflake_error_detail(exc)
         )
@@ -156,7 +204,6 @@ def preview_object(
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
-    # Prefer probed types (binary stays binary) over stubbed result types.
     type_by_name = dict(zip(names, types, strict=True))
     columns = [
         ColumnInfo(
@@ -190,12 +237,7 @@ def facet_column(
     col_type = body.type
     expr = facet_expr(column, col_type)
     table = fqn(db, schema, name)
-    params: dict[str, Any] = {
-        "limit": body.limit + 1,
-        "offset": body.offset,
-    }
 
-    # Scope by other filters; never apply this column's own filter to its facets.
     other = [
         (f.column, f.type, f.values, f.op)
         for f in body.filters
@@ -205,27 +247,45 @@ def facet_column(
     filter_where = build_where(other)
     if filter_where:
         clauses.append(filter_where.removeprefix(" WHERE "))
-    if body.q.strip():
-        clauses.append(f"CAST({expr} AS VARCHAR) ILIKE %(q)s")
-        params["q"] = f"%{body.q.strip()}%"
 
-    where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    sql = (
-        f"SELECT {expr} AS value, COUNT(*) AS cnt "
-        f"FROM {table}"
-        f"{where_sql} "
-        "GROUP BY 1 "
-        "ORDER BY cnt DESC, value ASC NULLS LAST "
-        "LIMIT %(limit)s OFFSET %(offset)s"
+    q = body.q.strip()
+    cache_key = (
+        f"facet:{credentials_hash(cfg)}:{db.upper()}:{schema.upper()}:"
+        f"{name.upper()}:{column}:{col_type}:{q}:"
+        f"{_filters_fingerprint([f for f in body.filters if f.column != column])}"
     )
 
-    try:
-        _, rows = run_query(cfg, sql, params)
-    except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+    cached = facet_cache.get(cache_key)
+    if cached is None:
+        params: dict[str, Any] = {"limit": _FACET_FETCH_CAP + 1}
+        if q:
+            clauses.append(f"CAST({expr} AS VARCHAR) ILIKE %(q)s")
+            params["q"] = f"%{q}%"
+        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT {expr} AS value, COUNT(*) AS cnt "
+            f"FROM {table}"
+            f"{where_sql} "
+            "GROUP BY 1 "
+            "ORDER BY cnt DESC, value ASC NULLS LAST "
+            "LIMIT %(limit)s"
+        )
+        try:
+            _, rows = run_query(cfg, sql, params)
+        except SnowflakeError as exc:
+            raise _http_snowflake(exc) from exc
+        truncated = len(rows) > _FACET_FETCH_CAP
+        all_rows = rows[:_FACET_FETCH_CAP]
+        cached = {"rows": all_rows, "truncated": truncated}
+        facet_cache.set(cache_key, cached)
 
-    has_more = len(rows) > body.limit
-    page = rows[: body.limit]
+    all_rows: list[list[Any]] = cached["rows"]
+    truncated: bool = cached["truncated"]
+    start = body.offset
+    end = body.offset + body.limit
+    page = all_rows[start:end]
+    has_more = end < len(all_rows) or (truncated and end >= len(all_rows))
+
     values: list[FacetValue] = []
     for raw_value, count in page:
         serialized = serialize_facet_value(raw_value)
@@ -267,6 +327,10 @@ def facet_periods(
             status_code=400, detail="hour grain only for timestamp columns"
         )
     expr = facet_expr(column, body.type, grain=body.grain)
+    # WHERE bounds on bare timestamp so pruning is not blocked by CAST(... AS DATE).
+    range_expr = (
+        column_ident(column) if body.type == "timestamp" else expr
+    )
     table = fqn(db, schema, name)
 
     other = [
@@ -283,6 +347,7 @@ def facet_periods(
         body.parent,
         clip=body.clip,
         extra_where=extra,
+        range_expr=range_expr,
     )
 
     try:
@@ -299,7 +364,6 @@ def facet_periods(
             )
             continue
         token = str(serialized)
-        # Day values may include time; normalize to YYYY-MM-DD
         if body.grain == "day" and len(token) >= 10 and token[4] == "-":
             token = token[:10]
         try:

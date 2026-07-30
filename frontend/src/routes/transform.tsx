@@ -33,6 +33,7 @@ import { useConnections } from '../connections'
 import { useDialog } from '../dialog'
 import { resolveColumnOrder } from '../openTabs'
 import { objectPathFrom } from '../paths'
+import { queryGcTime, TRANSFORM_COLUMNS_STALE_MS } from '../queryStale'
 import type { SavedSelection } from '../selections'
 import {
   defaultTransformLayout,
@@ -140,6 +141,8 @@ export default function TransformWorkspace() {
       )
     },
     enabled: Boolean(active && recipe && recipe.source.name),
+    staleTime: TRANSFORM_COLUMNS_STALE_MS,
+    gcTime: queryGcTime(TRANSFORM_COLUMNS_STALE_MS),
   })
 
   const runMut = useMutation({
