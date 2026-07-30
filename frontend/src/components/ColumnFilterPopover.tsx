@@ -18,16 +18,19 @@ import type {
 } from '../types'
 import {
   BOOLEAN_FILTER_OPS,
+  DATE_RELATIVE_OPS,
   FILTER_OP_LABELS,
   filterIsActive,
   filterNeedsBounds,
   filterNeedsPattern,
   filterValueKey,
+  isRelativeFilterOp,
   normalizeFilterOp,
   NUMBER_FILTER_OPS,
   parseFilterNumber,
   periodTokenLabel,
   STRING_FILTER_OPS,
+  TIMESTAMP_RELATIVE_OPS,
 } from '../types'
 import PeriodDrillTree from './PeriodDrillTree'
 import Spinner from './Spinner'
@@ -91,7 +94,7 @@ function savePopoverSize(size: PopoverSize): void {
   }
 }
 
-type Mode = 'values' | 'drill' | 'condition'
+type Mode = 'values' | 'drill' | 'condition' | 'relative'
 
 type Pos = { top: number; left: number; height: number }
 
@@ -116,10 +119,13 @@ type Props = {
 }
 
 function isConditionOp(op: FilterOp): boolean {
-  return op !== 'in'
+  return op !== 'in' && !isRelativeFilterOp(op)
 }
 
 function initialMode(type: FacetableType, applied: ColumnFilter[]): Mode {
+  if (applied.some((f) => isRelativeFilterOp(normalizeFilterOp(f.op)))) {
+    return 'relative'
+  }
   if (applied.some((f) => isConditionOp(normalizeFilterOp(f.op)))) {
     return 'condition'
   }
@@ -129,6 +135,14 @@ function initialMode(type: FacetableType, applied: ColumnFilter[]): Mode {
 
 function findApplied(filters: ColumnFilter[], op: FilterOp): ColumnFilter | undefined {
   return filters.find((f) => normalizeFilterOp(f.op) === op)
+}
+
+function findRelativeApplied(filters: ColumnFilter[]): FilterOp | null {
+  for (const f of filters) {
+    const op = normalizeFilterOp(f.op)
+    if (isRelativeFilterOp(op)) return op
+  }
+  return null
 }
 
 function exclusiveToggle(prev: Set<FilterOp>, op: FilterOp): Set<FilterOp> {
@@ -180,6 +194,12 @@ export default function ColumnFilterPopover({
   const isNumber = type === 'number'
   const isBoolean = type === 'boolean'
   const hasCondition = type === 'string' || isNumber || isBoolean
+  const relativeOps =
+    type === 'timestamp'
+      ? TIMESTAMP_RELATIVE_OPS
+      : type === 'date'
+        ? DATE_RELATIVE_OPS
+        : []
   const conditionOps = isNumber
     ? NUMBER_FILTER_OPS
     : isBoolean
@@ -188,6 +208,10 @@ export default function ColumnFilterPopover({
 
   const valueApplied = useMemo(
     () => findApplied(appliedFilters, 'in'),
+    [appliedFilters],
+  )
+  const relativeApplied = useMemo(
+    () => findRelativeApplied(appliedFilters),
     [appliedFilters],
   )
   const condApplied = useMemo(
@@ -204,6 +228,9 @@ export default function ColumnFilterPopover({
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState<FilterValue[]>(
     () => valueApplied?.values ?? [],
+  )
+  const [relativeOp, setRelativeOp] = useState<FilterOp | null>(
+    () => relativeApplied,
   )
   const [condOps, setCondOps] = useState<Set<FilterOp>>(() => {
     const ops = new Set(
@@ -256,6 +283,7 @@ export default function ColumnFilterPopover({
 
   useEffect(() => {
     setSelected(valueApplied?.values ?? [])
+    setRelativeOp(relativeApplied)
     const nextOps = new Set(
       condApplied.map((f) => normalizeFilterOp(f.op)).filter(isConditionOp),
     )
@@ -277,7 +305,7 @@ export default function ColumnFilterPopover({
     setBetweenHigh(
       between?.values[1] != null ? String(between.values[1]) : '',
     )
-  }, [valueApplied, condApplied])
+  }, [valueApplied, condApplied, relativeApplied])
 
   useEffect(() => {
     if (hasOtherFilters) setMatchOtherFilters(true)
@@ -497,11 +525,26 @@ export default function ColumnFilterPopover({
   const conditionDrafts = buildConditionFilters()
   const conditionReady = conditionDrafts.length > 0
   const valuesReady = selected.length > 0
-  const applyReady = mode === 'condition' ? conditionReady : valuesReady
+  const relativeReady = relativeOp != null
+  const applyReady =
+    mode === 'condition'
+      ? conditionReady
+      : mode === 'relative'
+        ? relativeReady
+        : valuesReady
 
   const apply = () => {
     if (mode === 'condition') {
       onApply(conditionDrafts)
+      onClose()
+      return
+    }
+    if (mode === 'relative') {
+      if (!relativeOp) {
+        onApply([])
+      } else {
+        onApply([{ column, type, values: [], op: relativeOp }])
+      }
       onClose()
       return
     }
@@ -515,6 +558,7 @@ export default function ColumnFilterPopover({
 
   const clear = () => {
     setSelected([])
+    setRelativeOp(null)
     setCondOps(new Set())
     setPatterns({})
     setGtVal('')
@@ -570,6 +614,17 @@ export default function ColumnFilterPopover({
               onClick={() => setMode('drill')}
             >
               Drill-down
+            </button>
+          ) : null}
+          {isDateType ? (
+            <button
+              type="button"
+              role="tab"
+              className={`btn-micro${mode === 'relative' ? ' open' : ''}`}
+              aria-selected={mode === 'relative'}
+              onClick={() => setMode('relative')}
+            >
+              Relative
             </button>
           ) : null}
           <button
@@ -726,6 +781,54 @@ export default function ColumnFilterPopover({
               </div>
             )
           })}
+        </div>
+      ) : mode === 'relative' ? (
+        <div className="facet-relative">
+          <div className="facet-relative-group">
+            <div className="facet-relative-label">This</div>
+            <div className="facet-relative-ops" role="listbox" aria-label="This period">
+              {relativeOps
+                .filter((op) => op.startsWith('this_'))
+                .map((op) => (
+                  <button
+                    key={op}
+                    type="button"
+                    role="option"
+                    aria-selected={relativeOp === op}
+                    className={`facet-condition-op${relativeOp === op ? ' on' : ''}`}
+                    onClick={() =>
+                      setRelativeOp((prev) => (prev === op ? null : op))
+                    }
+                  >
+                    {FILTER_OP_LABELS[op]}
+                  </button>
+                ))}
+            </div>
+          </div>
+          <div className="facet-relative-group">
+            <div className="facet-relative-label">Last</div>
+            <div className="facet-relative-ops" role="listbox" aria-label="Last period">
+              {relativeOps
+                .filter((op) => op.startsWith('last_'))
+                .map((op) => (
+                  <button
+                    key={op}
+                    type="button"
+                    role="option"
+                    aria-selected={relativeOp === op}
+                    className={`facet-condition-op${relativeOp === op ? ' on' : ''}`}
+                    onClick={() =>
+                      setRelativeOp((prev) => (prev === op ? null : op))
+                    }
+                  >
+                    {FILTER_OP_LABELS[op]}
+                  </button>
+                ))}
+            </div>
+          </div>
+          <div className="facet-condition-hint">
+            Relative to the warehouse clock when the query runs.
+          </div>
         </div>
       ) : mode === 'values' ? (
         <>
@@ -923,14 +1026,18 @@ export default function ColumnFilterPopover({
               applyReady
                 ? mode === 'condition'
                   ? `Apply (${conditionDrafts.length} condition${conditionDrafts.length === 1 ? '' : 's'})`
-                  : `Apply (${selected.length})`
+                  : mode === 'relative' && relativeOp
+                    ? `Apply (${FILTER_OP_LABELS[relativeOp]})`
+                    : `Apply (${selected.length})`
                 : 'Apply (clear filter)'
             }
             aria-label={
               applyReady
                 ? mode === 'condition'
                   ? `Apply ${conditionDrafts.length} conditions`
-                  : `Apply ${selected.length} values`
+                  : mode === 'relative' && relativeOp
+                    ? `Apply ${FILTER_OP_LABELS[relativeOp]}`
+                    : `Apply ${selected.length} values`
                 : 'Apply clear filter'
             }
           >

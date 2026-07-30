@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -10,19 +10,47 @@ from fastapi import HTTPException
 from snowflake_client import quote_ident
 
 FACETABLE = frozenset({"string", "number", "boolean", "date", "timestamp"})
-PeriodGrain = Literal["year", "month", "week", "day"]
+PeriodGrain = Literal["year", "month", "week", "day", "hour"]
 
 _YEAR_RE = re.compile(r"^\d{4}$")
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _WEEK_RE = re.compile(r"^(\d{4})-W(0[1-9]|[1-4]\d|5[0-3])$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_HOUR_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3])$")
+
+RELATIVE_OPS = frozenset(
+    {
+        "this_hour",
+        "this_day",
+        "this_week",
+        "this_month",
+        "this_year",
+        "last_hour",
+        "last_day",
+        "last_week",
+        "last_month",
+        "last_year",
+    }
+)
 
 
-def facet_expr(column: str, col_type: str, *, alias: str | None = None) -> str:
+def column_ident(column: str, *, alias: str | None = None) -> str:
     ident = quote_ident(column)
     if alias:
-        ident = f"{quote_ident(alias)}.{ident}"
-    if col_type == "timestamp":
+        return f"{quote_ident(alias)}.{ident}"
+    return ident
+
+
+def facet_expr(
+    column: str,
+    col_type: str,
+    *,
+    alias: str | None = None,
+    grain: str | None = None,
+) -> str:
+    ident = column_ident(column, alias=alias)
+    # Hour facets need the raw timestamp; coarser grains use calendar date.
+    if col_type == "timestamp" and grain != "hour":
         return f"CAST({ident} AS DATE)"
     return ident
 
@@ -49,6 +77,8 @@ def serialize_facet_value(value: object) -> object:
 
 
 def classify_date_token(text: str) -> PeriodGrain:
+    if _HOUR_RE.match(text):
+        return "hour"
     if _YEAR_RE.match(text):
         return "year"
     if _MONTH_RE.match(text):
@@ -61,7 +91,8 @@ def classify_date_token(text: str) -> PeriodGrain:
         status_code=400,
         detail=(
             "Invalid date filter value "
-            f"(expected YYYY, YYYY-MM, YYYY-Www, or YYYY-MM-DD): {text!r}"
+            "(expected YYYY, YYYY-MM, YYYY-Www, YYYY-MM-DD, or YYYY-MM-DDTHH): "
+            f"{text!r}"
         ),
     )
 
@@ -79,24 +110,40 @@ def next_month_start(year: int, month: int) -> date:
     return date(year, month + 1, 1)
 
 
-def period_bounds(token: str) -> tuple[date, date]:
+def period_bounds(token: str) -> tuple[datetime, datetime]:
     """Inclusive start, exclusive end for a period token."""
     grain = classify_date_token(token)
+    if grain == "hour":
+        m = _HOUR_RE.match(token)
+        assert m is not None
+        y, mo, d, h = (
+            int(m.group(1)),
+            int(m.group(2)),
+            int(m.group(3)),
+            int(m.group(4)),
+        )
+        start = datetime(y, mo, d, h)
+        return start, start + timedelta(hours=1)
     if grain == "year":
         y = int(token)
-        return date(y, 1, 1), date(y + 1, 1, 1)
+        return datetime(y, 1, 1), datetime(y + 1, 1, 1)
     if grain == "month":
         y, m = int(token[:4]), int(token[5:7])
-        return date(y, m, 1), next_month_start(y, m)
+        end_d = next_month_start(y, m)
+        return datetime(y, m, 1), datetime(end_d.year, end_d.month, end_d.day)
     if grain == "week":
         m = _WEEK_RE.match(token)
         assert m is not None
         y, w = int(m.group(1)), int(m.group(2))
-        start = iso_week_start(y, w)
-        return start, start + timedelta(days=7)
+        start_d = iso_week_start(y, w)
+        end_d = start_d + timedelta(days=7)
+        return (
+            datetime(start_d.year, start_d.month, start_d.day),
+            datetime(end_d.year, end_d.month, end_d.day),
+        )
     # day
     y, mo, d = int(token[:4]), int(token[5:7]), int(token[8:10])
-    start = date(y, mo, d)
+    start = datetime(y, mo, d)
     return start, start + timedelta(days=1)
 
 
@@ -104,9 +151,82 @@ def _sql_date(d: date) -> str:
     return f"DATE '{d.isoformat()}'"
 
 
-def period_predicate(expr: str, token: str) -> str:
+def _sql_ts(dt: datetime) -> str:
+    return f"TIMESTAMP '{dt.strftime('%Y-%m-%d %H:%M:%S')}'"
+
+
+def period_predicate(
+    expr: str, token: str, *, col_type: str = "date"
+) -> str:
     start, end = period_bounds(token)
-    return f"({expr} >= {_sql_date(start)} AND {expr} < {_sql_date(end)})"
+    grain = classify_date_token(token)
+    if grain == "hour" and col_type != "timestamp":
+        raise HTTPException(
+            status_code=400,
+            detail="hour filter only supported for timestamps",
+        )
+    if col_type == "timestamp":
+        return f"({expr} >= {_sql_ts(start)} AND {expr} < {_sql_ts(end)})"
+    return (
+        f"({expr} >= {_sql_date(start.date())} "
+        f"AND {expr} < {_sql_date(end.date())})"
+    )
+
+
+def relative_predicate(expr: str, op: str, col_type: str) -> str:
+    if op not in RELATIVE_OPS:
+        raise HTTPException(status_code=400, detail=f"Unknown relative op {op}")
+    if op in ("this_hour", "last_hour") and col_type != "timestamp":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{op} only supported for timestamps",
+        )
+
+    if col_type == "timestamp":
+        cur = "CURRENT_TIMESTAMP()"
+
+        def trunc(unit: str) -> str:
+            return f"DATE_TRUNC('{unit}', {cur})"
+
+        def add(unit: str, n: int, base: str) -> str:
+            return f"DATEADD({unit}, {n}, {base})"
+
+        ranges = {
+            "this_hour": (trunc("hour"), add("hour", 1, trunc("hour"))),
+            "last_hour": (add("hour", -1, trunc("hour")), trunc("hour")),
+            "this_day": (trunc("day"), add("day", 1, trunc("day"))),
+            "last_day": (add("day", -1, trunc("day")), trunc("day")),
+            "this_week": (trunc("week"), add("week", 1, trunc("week"))),
+            "last_week": (add("week", -1, trunc("week")), trunc("week")),
+            "this_month": (trunc("month"), add("month", 1, trunc("month"))),
+            "last_month": (add("month", -1, trunc("month")), trunc("month")),
+            "this_year": (trunc("year"), add("year", 1, trunc("year"))),
+            "last_year": (add("year", -1, trunc("year")), trunc("year")),
+        }
+    else:
+        cur = "CURRENT_DATE()"
+
+        def trunc(unit: str) -> str:
+            if unit == "day":
+                return cur
+            return f"DATE_TRUNC('{unit}', {cur})"
+
+        def add(unit: str, n: int, base: str) -> str:
+            return f"DATEADD({unit}, {n}, {base})"
+
+        ranges = {
+            "this_day": (trunc("day"), add("day", 1, trunc("day"))),
+            "last_day": (add("day", -1, trunc("day")), trunc("day")),
+            "this_week": (trunc("week"), add("week", 1, trunc("week"))),
+            "last_week": (add("week", -1, trunc("week")), trunc("week")),
+            "this_month": (trunc("month"), add("month", 1, trunc("month"))),
+            "last_month": (add("month", -1, trunc("month")), trunc("month")),
+            "this_year": (trunc("year"), add("year", 1, trunc("year"))),
+            "last_year": (add("year", -1, trunc("year")), trunc("year")),
+        }
+
+    start, end = ranges[op]
+    return f"({expr} >= {start} AND {expr} < {end})"
 
 
 def sql_value_literal(value: object, col_type: str) -> str:
@@ -188,6 +308,11 @@ def build_filter_clause(
         )
 
     expr = facet_expr(column, col_type, alias=alias)
+    ident = column_ident(column, alias=alias)
+
+    if op in RELATIVE_OPS:
+        target = ident if col_type == "timestamp" else expr
+        return relative_predicate(target, op, col_type)
 
     if op == "is_null":
         return f"{expr} IS NULL"
@@ -249,7 +374,12 @@ def build_filter_clause(
 
     parts: list[str] = []
     if non_null:
-        if col_type in ("date", "timestamp"):
+        if col_type == "timestamp":
+            for v in non_null:
+                parts.append(
+                    period_predicate(ident, str(v), col_type="timestamp")
+                )
+        elif col_type == "date":
             days: list[str] = []
             for v in non_null:
                 text = str(v)
@@ -257,7 +387,7 @@ def build_filter_clause(
                 if grain == "day":
                     days.append(text)
                 else:
-                    parts.append(period_predicate(expr, text))
+                    parts.append(period_predicate(expr, text, col_type="date"))
             if days:
                 literals = ", ".join(sql_value_literal(d, col_type) for d in days)
                 parts.append(f"{expr} IN ({literals})")
@@ -334,6 +464,8 @@ def period_label(token: str) -> str:
         return f"{_MONTH_LABELS[m - 1]} {token[:4]}"
     if grain == "week":
         return f"Week {int(token[6:])} · {token[:4]}"
+    if grain == "hour":
+        return f"{token[11:13]}:00"
     return token
 
 
@@ -402,33 +534,57 @@ def build_period_facet_sql(
             f"ORDER BY YEAROFWEEKISO({expr}) ASC, WEEKISO({expr}) ASC"
         )
 
-    # day
-    if parent is None or not _WEEK_RE.match(parent):
-        raise HTTPException(
-            status_code=400, detail="day grain requires parent YYYY-Www"
-        )
-    wm = _WEEK_RE.match(parent)
-    assert wm is not None
-    wy, ww = int(wm.group(1)), int(wm.group(2))
-    w_start = iso_week_start(wy, ww)
-    w_end = w_start + timedelta(days=7)
-    clauses.append(f"{expr} >= {_sql_date(w_start)}")
-    clauses.append(f"{expr} < {_sql_date(w_end)}")
-    if clip is not None:
-        if not _MONTH_RE.match(clip):
+    if grain == "day":
+        if parent is None or not _WEEK_RE.match(parent):
             raise HTTPException(
-                status_code=400, detail="clip must be YYYY-MM when provided"
+                status_code=400, detail="day grain requires parent YYYY-Www"
             )
-        cy, cm = int(clip[:4]), int(clip[5:7])
-        c_start = date(cy, cm, 1)
-        c_end = next_month_start(cy, cm)
-        clauses.append(f"{expr} >= {_sql_date(c_start)}")
-        clauses.append(f"{expr} < {_sql_date(c_end)}")
-    where = f" WHERE {' AND '.join(clauses)}"
-    return (
-        f"SELECT TO_VARCHAR({expr}) AS value, COUNT(*) AS cnt "
-        f"FROM {table}"
-        f"{where} "
-        f"GROUP BY {expr} "
-        f"ORDER BY {expr} ASC"
-    )
+        wm = _WEEK_RE.match(parent)
+        assert wm is not None
+        wy, ww = int(wm.group(1)), int(wm.group(2))
+        w_start = iso_week_start(wy, ww)
+        w_end = w_start + timedelta(days=7)
+        clauses.append(f"{expr} >= {_sql_date(w_start)}")
+        clauses.append(f"{expr} < {_sql_date(w_end)}")
+        if clip is not None:
+            if not _MONTH_RE.match(clip):
+                raise HTTPException(
+                    status_code=400, detail="clip must be YYYY-MM when provided"
+                )
+            cy, cm = int(clip[:4]), int(clip[5:7])
+            c_start = date(cy, cm, 1)
+            c_end = next_month_start(cy, cm)
+            clauses.append(f"{expr} >= {_sql_date(c_start)}")
+            clauses.append(f"{expr} < {_sql_date(c_end)}")
+        where = f" WHERE {' AND '.join(clauses)}"
+        return (
+            f"SELECT TO_VARCHAR({expr}) AS value, COUNT(*) AS cnt "
+            f"FROM {table}"
+            f"{where} "
+            f"GROUP BY {expr} "
+            f"ORDER BY {expr} ASC"
+        )
+
+    if grain == "hour":
+        if parent is None or not _DATE_RE.match(parent):
+            raise HTTPException(
+                status_code=400, detail="hour grain requires parent YYYY-MM-DD"
+            )
+        y, m, d = int(parent[:4]), int(parent[5:7]), int(parent[8:10])
+        start = datetime(y, m, d)
+        end = start + timedelta(days=1)
+        clauses.append(f"{expr} >= {_sql_ts(start)}")
+        clauses.append(f"{expr} < {_sql_ts(end)}")
+        where = f" WHERE {' AND '.join(clauses)}"
+        return (
+            f"SELECT CONCAT("
+            f"TO_VARCHAR(TO_DATE({expr})), 'T', "
+            f"LPAD(TO_VARCHAR(HOUR({expr})), 2, '0')"
+            f") AS value, COUNT(*) AS cnt "
+            f"FROM {table}"
+            f"{where} "
+            f"GROUP BY TO_DATE({expr}), HOUR({expr}) "
+            f"ORDER BY HOUR({expr}) ASC"
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unknown period grain {grain}")

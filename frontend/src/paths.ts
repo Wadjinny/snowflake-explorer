@@ -28,6 +28,16 @@ const FILTER_OPS: ReadonlySet<string> = new Set([
   'gt',
   'lt',
   'between',
+  'this_hour',
+  'this_day',
+  'this_week',
+  'this_month',
+  'this_year',
+  'last_hour',
+  'last_day',
+  'last_week',
+  'last_month',
+  'last_year',
 ])
 
 function isFilterValue(value: unknown): value is FilterValue {

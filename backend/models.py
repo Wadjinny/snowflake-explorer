@@ -68,6 +68,16 @@ FilterOp = Literal[
     "gt",
     "lt",
     "between",
+    "this_hour",
+    "this_day",
+    "this_week",
+    "this_month",
+    "this_year",
+    "last_hour",
+    "last_day",
+    "last_week",
+    "last_month",
+    "last_year",
 ]
 
 
@@ -113,7 +123,7 @@ class FacetResult(BaseModel):
     has_more: bool
 
 
-PeriodGrain = Literal["year", "month", "week", "day"]
+PeriodGrain = Literal["year", "month", "week", "day", "hour"]
 
 
 class FacetPeriodRequest(BaseModel):

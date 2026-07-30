@@ -50,7 +50,17 @@ function isFilterOp(value: unknown): boolean {
     value === 'endswith' ||
     value === 'gt' ||
     value === 'lt' ||
-    value === 'between'
+    value === 'between' ||
+    value === 'this_hour' ||
+    value === 'this_day' ||
+    value === 'this_week' ||
+    value === 'this_month' ||
+    value === 'this_year' ||
+    value === 'last_hour' ||
+    value === 'last_day' ||
+    value === 'last_week' ||
+    value === 'last_month' ||
+    value === 'last_year'
   )
 }
 

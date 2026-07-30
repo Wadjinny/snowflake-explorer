@@ -25,10 +25,14 @@ type Props = {
   onToggle: (value: FilterValue) => void
 }
 
-function childGrain(grain: PeriodGrain): PeriodGrain | null {
+function childGrain(
+  grain: PeriodGrain,
+  type: FacetableType,
+): PeriodGrain | null {
   if (grain === 'year') return 'month'
   if (grain === 'month') return 'week'
   if (grain === 'week') return 'day'
+  if (grain === 'day' && type === 'timestamp') return 'hour'
   return null
 }
 
@@ -177,7 +181,7 @@ function PeriodTreeNode({
   const token = String(item.value)
   const nodePath = [...path, token]
   const key = pathKey(nodePath)
-  const next = childGrain(grain)
+  const next = childGrain(grain, type)
   const canExpand = next != null
   const isOpen = canExpand && expanded.has(key)
   const checked = selectedKeys.has(filterValueKey(item.value))

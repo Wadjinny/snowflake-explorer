@@ -102,6 +102,16 @@ export type FilterOp =
   | 'gt'
   | 'lt'
   | 'between'
+  | 'this_hour'
+  | 'this_day'
+  | 'this_week'
+  | 'this_month'
+  | 'this_year'
+  | 'last_hour'
+  | 'last_day'
+  | 'last_week'
+  | 'last_month'
+  | 'last_year'
 
 export const STRING_FILTER_OPS: FilterOp[] = [
   'is_null',
@@ -123,6 +133,30 @@ export const NUMBER_FILTER_OPS: FilterOp[] = [
 
 export const BOOLEAN_FILTER_OPS: FilterOp[] = ['is_not_null', 'is_null']
 
+export const DATE_RELATIVE_OPS: FilterOp[] = [
+  'this_year',
+  'this_month',
+  'this_week',
+  'this_day',
+  'last_year',
+  'last_month',
+  'last_week',
+  'last_day',
+]
+
+export const TIMESTAMP_RELATIVE_OPS: FilterOp[] = [
+  'this_year',
+  'this_month',
+  'this_week',
+  'this_day',
+  'this_hour',
+  'last_year',
+  'last_month',
+  'last_week',
+  'last_day',
+  'last_hour',
+]
+
 export const FILTER_OP_LABELS: Record<FilterOp, string> = {
   in: 'Values',
   is_null: 'Null',
@@ -135,6 +169,31 @@ export const FILTER_OP_LABELS: Record<FilterOp, string> = {
   gt: 'Bigger than',
   lt: 'Lower than',
   between: 'Between',
+  this_hour: 'This hour',
+  this_day: 'This day',
+  this_week: 'This week',
+  this_month: 'This month',
+  this_year: 'This year',
+  last_hour: 'Last hour',
+  last_day: 'Last day',
+  last_week: 'Last week',
+  last_month: 'Last month',
+  last_year: 'Last year',
+}
+
+export function isRelativeFilterOp(op: FilterOp): boolean {
+  return (
+    op === 'this_hour' ||
+    op === 'this_day' ||
+    op === 'this_week' ||
+    op === 'this_month' ||
+    op === 'this_year' ||
+    op === 'last_hour' ||
+    op === 'last_day' ||
+    op === 'last_week' ||
+    op === 'last_month' ||
+    op === 'last_year'
+  )
 }
 
 export type ColumnFilter = {
@@ -204,7 +263,8 @@ export function filterIsActive(filter: ColumnFilter): boolean {
     op === 'is_null' ||
     op === 'is_not_null' ||
     op === 'is_empty' ||
-    op === 'is_not_empty'
+    op === 'is_not_empty' ||
+    isRelativeFilterOp(op)
   ) {
     return true
   }
@@ -223,6 +283,9 @@ export function filterIsActive(filter: ColumnFilter): boolean {
 /** Short chip / badge text for a filter. */
 export function filterChipLabels(filter: ColumnFilter): string[] {
   const op = normalizeFilterOp(filter.op)
+  if (isRelativeFilterOp(op)) {
+    return [FILTER_OP_LABELS[op]]
+  }
   if (op === 'in') {
     return filter.values.map((v) =>
       filter.type === 'date' || filter.type === 'timestamp'
@@ -266,7 +329,7 @@ export type FacetResult = {
   has_more: boolean
 }
 
-export type PeriodGrain = 'year' | 'month' | 'week' | 'day'
+export type PeriodGrain = 'year' | 'month' | 'week' | 'day' | 'hour'
 
 export type FacetPeriodResult = {
   values: FacetValue[]
@@ -315,6 +378,9 @@ export function periodTokenLabel(value: FilterValue): string {
   }
   if (/^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/.test(text)) {
     return `Week ${Number(text.slice(6))} · ${text.slice(0, 4)}`
+  }
+  if (/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3])$/.test(text)) {
+    return `${text.slice(11, 13)}:00`
   }
   return text
 }

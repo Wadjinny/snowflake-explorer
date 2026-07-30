@@ -1695,6 +1695,33 @@ body.facet-resizing * {
   min-height: 0;
 }
 
+.facet-relative {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.facet-relative-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.facet-relative-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.facet-relative-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .facet-condition-ops {
   display: flex;
   flex-wrap: wrap;

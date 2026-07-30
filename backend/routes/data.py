@@ -262,7 +262,11 @@ def facet_periods(
         )
 
     column = body.column
-    expr = facet_expr(column, body.type)
+    if body.grain == "hour" and body.type != "timestamp":
+        raise HTTPException(
+            status_code=400, detail="hour grain only for timestamp columns"
+        )
+    expr = facet_expr(column, body.type, grain=body.grain)
     table = fqn(db, schema, name)
 
     other = [
@@ -299,7 +303,10 @@ def facet_periods(
         if body.grain == "day" and len(token) >= 10 and token[4] == "-":
             token = token[:10]
         try:
-            label = period_label(token) if body.grain != "day" else token
+            if body.grain in ("day", "hour"):
+                label = period_label(token) if body.grain == "hour" else token
+            else:
+                label = period_label(token)
         except HTTPException:
             label = token
         values.append(
