@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { listDatabases, listObjects, listSchemas } from '../api/snowflake'
+import { listDatabases, listObjects } from '../api/snowflake'
+import {
+  CATALOG_STALE_MS,
+  schemasInDatabase,
+  useAllSchemas,
+} from '../catalogSchemas'
 import type { Connection, ObjectItem, SelectedObject } from '../types'
 import Spinner from './Spinner'
 import {
@@ -49,6 +54,7 @@ export default function TablePicker({
   const databases = useQuery({
     queryKey: ['databases', connection.id],
     queryFn: () => listDatabases(connection),
+    staleTime: CATALOG_STALE_MS,
   })
 
   useLayoutEffect(() => {
@@ -251,13 +257,13 @@ function SchemaBranch({
   onToggleSchema: (database: string, schema: string) => void
   onPick: (next: SelectedObject) => void
 }) {
-  const schemas = useQuery({
-    queryKey: ['schemas', connection.id, database],
-    queryFn: () => listSchemas(connection, database),
-  })
+  const schemas = useAllSchemas(connection)
 
   // Never hide schemas while filtering — filter applies to table/view names only.
-  const list = schemas.data ?? []
+  const list = useMemo(
+    () => schemasInDatabase(schemas.data, database),
+    [schemas.data, database],
+  )
 
   if (schemas.isLoading && !schemas.data) {
     return (

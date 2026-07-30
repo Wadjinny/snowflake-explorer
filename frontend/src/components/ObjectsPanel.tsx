@@ -37,7 +37,7 @@ export default function ObjectsPanel({
       return (
         Boolean(connection) &&
         (key[0] === 'databases' ||
-          key[0] === 'schemas' ||
+          key[0] === 'all-schemas' ||
           key[0] === 'objects') &&
         key[1] === connection?.id
       )
@@ -47,7 +47,7 @@ export default function ObjectsPanel({
   const refreshTree = () => {
     if (!connection) return
     void queryClient.invalidateQueries({ queryKey: ['databases', connection.id] })
-    void queryClient.invalidateQueries({ queryKey: ['schemas', connection.id] })
+    void queryClient.invalidateQueries({ queryKey: ['all-schemas', connection.id] })
     void queryClient.invalidateQueries({ queryKey: ['objects', connection.id] })
   }
 

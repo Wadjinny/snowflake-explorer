@@ -15,10 +15,17 @@ export type OpenTab = {
   columnOrder: string[]
   /** Per-column pixel widths; missing = default. */
   columnWidths: Record<string, number>
+  /** Data grid panel scroll (restored when switching tabs). */
+  scrollTop: number
+  scrollLeft: number
 }
 
 function storageKey(connectionId: string): string {
   return `sf-explorer.tabs:${connectionId}`
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function isOpenTab(value: unknown): value is OpenTab {
@@ -39,6 +46,9 @@ function isOpenTab(value: unknown): value is OpenTab {
       Object.values(t.columnWidths as Record<string, unknown>).every(
         (v) => typeof v === 'number',
       ))
+  const scrollOk =
+    (t.scrollTop === undefined || isFiniteNumber(t.scrollTop)) &&
+    (t.scrollLeft === undefined || isFiniteNumber(t.scrollLeft))
   return (
     typeof t.key === 'string' &&
     !!obj &&
@@ -52,7 +62,8 @@ function isOpenTab(value: unknown): value is OpenTab {
     typeof t.offset === 'number' &&
     hiddenOk &&
     orderOk &&
-    widthsOk
+    widthsOk &&
+    scrollOk
   )
 }
 
@@ -65,6 +76,10 @@ function normalizeTab(tab: OpenTab): OpenTab {
       tab.columnWidths && typeof tab.columnWidths === 'object'
         ? tab.columnWidths
         : {},
+    scrollTop: isFiniteNumber(tab.scrollTop) ? Math.max(0, tab.scrollTop) : 0,
+    scrollLeft: isFiniteNumber(tab.scrollLeft)
+      ? Math.max(0, tab.scrollLeft)
+      : 0,
   }
 }
 
@@ -99,6 +114,8 @@ export function makeTab(object: SelectedObject): OpenTab {
     hiddenColumns: [],
     columnOrder: [],
     columnWidths: {},
+    scrollTop: 0,
+    scrollLeft: 0,
   }
 }
 

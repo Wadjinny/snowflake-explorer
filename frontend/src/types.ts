@@ -12,6 +12,12 @@ export type NameItem = {
   name: string
 }
 
+/** Schema row from account-wide catalog listing (`GET /api/schemas`). */
+export type SchemaItem = {
+  database: string
+  name: string
+}
+
 export type ObjectKind = 'table' | 'view'
 
 export type ObjectItem = {
@@ -137,6 +143,29 @@ export type ColumnFilter = {
   values: FilterValue[]
   /** Defaults to `in` when omitted (legacy saved filters). */
   op?: FilterOp
+}
+
+/** Map stray null labels (e.g. Python `str(None)`) back to JSON null. */
+export function normalizeFilterValue(
+  type: FacetableType,
+  value: FilterValue,
+): FilterValue {
+  if (value === null) return null
+  if (
+    (type === 'date' || type === 'timestamp') &&
+    typeof value === 'string'
+  ) {
+    const text = value.trim().toLowerCase()
+    if (text === '' || text === 'none' || text === 'null') return null
+  }
+  return value
+}
+
+export function normalizeColumnFilter(filter: ColumnFilter): ColumnFilter {
+  return {
+    ...filter,
+    values: filter.values.map((v) => normalizeFilterValue(filter.type, v)),
+  }
 }
 
 export function normalizeFilterOp(op: FilterOp | undefined): FilterOp {

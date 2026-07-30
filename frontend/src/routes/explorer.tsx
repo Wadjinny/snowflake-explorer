@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams, useSearchParams, useLocation } from 'react-router'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
 import { previewObject } from '../api/snowflake'
 import ColumnPicker from '../components/ColumnPicker'
@@ -33,7 +33,13 @@ import {
   getDefaultPageSize,
   setDefaultPageSize,
 } from '../pageSizePrefs'
-import { objectKeyFrom, objectPathFrom, objectTitle } from '../paths'
+import {
+  filtersParamEqual,
+  objectKeyFrom,
+  objectPathFrom,
+  objectTitle,
+  parseFiltersParam,
+} from '../paths'
 import {
   defaultSelectionName,
   type SavedSelection,
@@ -48,9 +54,18 @@ import type {
   SelectedObject,
   SortSpec,
 } from '../types'
-import { filterIsActive } from '../types'
+import { filterChipLabels, filterIsActive, normalizeColumnFilter, normalizeFilterOp } from '../types'
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
+const DATA_FILTER_INFO_MAX = 5
+
+function formatFilterInfoLabel(filter: ColumnFilter): string {
+  const chips = filterChipLabels(filter)
+  if (chips.length === 0) return normalizeFilterOp(filter.op)
+  if (chips.length === 1) return chips[0]!
+  if (chips.length === 2) return chips.join(', ')
+  return `${chips[0]}, ${chips[1]} +${chips.length - 2}`
+}
 
 function useSelectedFromUrl(): SelectedObject | null {
   const params = useParams()
@@ -68,6 +83,8 @@ function useSelectedFromUrl(): SelectedObject | null {
 
 export default function Explorer() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
   const dialog = useDialog()
   const { active } = useConnections()
   const { isFavorite, toggle: toggleFavorite } = useFavorites()
@@ -85,15 +102,27 @@ export default function Explorer() {
   )
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const inspectorPanelRef = usePanelRef()
+  const gridScrollRef = useRef<HTMLDivElement>(null)
+  const scrollPosByTab = useRef(
+    new Map<string, { top: number; left: number }>(),
+  )
+  const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const activeKey = urlObject ? objectKeyFrom(urlObject) : null
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null
+  const filtersSearchRaw = searchParams.get('f')
+  const urlHasFiltersParam = searchParams.has('f')
 
   // Load tabs when connection changes
   const prevConnectionId = useRef<string | undefined>(undefined)
   useEffect(() => {
     const prev = prevConnectionId.current
     prevConnectionId.current = active?.id
+    scrollPosByTab.current.clear()
+    if (scrollSaveTimer.current) {
+      clearTimeout(scrollSaveTimer.current)
+      scrollSaveTimer.current = null
+    }
     if (!active?.id) {
       setTabs([])
       return
@@ -103,6 +132,23 @@ export default function Explorer() {
       navigate('/', { replace: true })
     }
   }, [active?.id, navigate])
+
+  // Seed live scroll map from persisted tab state (first time we see a key).
+  useEffect(() => {
+    for (const t of tabs) {
+      if (scrollPosByTab.current.has(t.key)) continue
+      scrollPosByTab.current.set(t.key, {
+        top: t.scrollTop,
+        left: t.scrollLeft,
+      })
+    }
+  }, [tabs])
+
+  useEffect(() => {
+    return () => {
+      if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
+    }
+  }, [])
 
   // Persist tabs
   useEffect(() => {
@@ -116,6 +162,35 @@ export default function Explorer() {
     setTabs((prev) => upsertTab(prev, urlObject))
   }, [urlObject, active?.id])
 
+  // URL `f` → active tab filters (only when the param is present).
+  useEffect(() => {
+    if (!activeKey || !urlHasFiltersParam) return
+    const parsed = parseFiltersParam(filtersSearchRaw)
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.key !== activeKey) return t
+        if (filtersParamEqual(t.filters, parsed)) return t
+        return { ...t, filters: parsed, offset: 0 }
+      }),
+    )
+  }, [activeKey, urlHasFiltersParam, filtersSearchRaw])
+
+  // Active tab filters → URL (keeps shareable links + session restore in sync).
+  useEffect(() => {
+    if (!urlObject || !activeTab || activeTab.key !== activeKey) return
+    const desired = objectPathFrom(urlObject, { filters: activeTab.filters })
+    const current = `${location.pathname}${location.search}`
+    if (desired === current) return
+    navigate(desired, { replace: true })
+  }, [
+    activeKey,
+    activeTab,
+    location.pathname,
+    location.search,
+    navigate,
+    urlObject,
+  ])
+
   const updateActiveTab = (patch: Partial<OpenTab>) => {
     if (!activeKey) return
     setTabs((prev) =>
@@ -124,7 +199,10 @@ export default function Explorer() {
   }
 
   const onFiltersChange = (next: ColumnFilter[]) => {
-    updateActiveTab({ filters: next, offset: 0 })
+    updateActiveTab({
+      filters: next.map(normalizeColumnFilter),
+      offset: 0,
+    })
   }
 
   const onSortChange = (next: SortSpec | null) => {
@@ -138,9 +216,12 @@ export default function Explorer() {
       const next = prev.filter((t) => t.key !== key)
       if (key === activeKey) {
         const fallback = next[idx] ?? next[idx - 1] ?? null
-        navigate(fallback ? objectPathFrom(fallback.object) : '/', {
-          replace: true,
-        })
+        navigate(
+          fallback
+            ? objectPathFrom(fallback.object, { filters: fallback.filters })
+            : '/',
+          { replace: true },
+        )
       }
       return next
     })
@@ -158,13 +239,15 @@ export default function Explorer() {
       hiddenColumns: sel.hiddenColumns,
       columnOrder: sel.columnOrder,
       columnWidths: sel.columnWidths ?? {},
+      scrollTop: 0,
+      scrollLeft: 0,
     }
     setTabs((prev) => {
       const exists = prev.some((t) => t.key === key)
       if (exists) return prev.map((t) => (t.key === key ? tab : t))
       return [...prev, tab]
     })
-    navigate(objectPathFrom(sel.object))
+    navigate(objectPathFrom(sel.object, { filters: sel.filters }))
   }
 
   const saveCurrentSelection = async () => {
@@ -306,6 +389,41 @@ export default function Explorer() {
     },
   })
 
+  useLayoutEffect(() => {
+    const el = gridScrollRef.current
+    if (!el || !activeKey) return
+    const pos = scrollPosByTab.current.get(activeKey) ?? { top: 0, left: 0 }
+    el.scrollTop = pos.top
+    el.scrollLeft = pos.left
+  }, [activeKey])
+
+  useLayoutEffect(() => {
+    if (!preview.data || !activeKey) return
+    const el = gridScrollRef.current
+    if (!el) return
+    const pos = scrollPosByTab.current.get(activeKey) ?? { top: 0, left: 0 }
+    el.scrollTop = pos.top
+    el.scrollLeft = pos.left
+  }, [activeKey, preview.data])
+
+  const onGridScroll = () => {
+    const el = gridScrollRef.current
+    if (!el || !activeKey) return
+    const pos = { top: el.scrollTop, left: el.scrollLeft }
+    scrollPosByTab.current.set(activeKey, pos)
+    if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
+    const key = activeKey
+    scrollSaveTimer.current = setTimeout(() => {
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.key === key
+            ? { ...t, scrollTop: pos.top, scrollLeft: pos.left }
+            : t,
+        ),
+      )
+    }, 150)
+  }
+
   const rowCount = preview.data?.rows.length ?? 0
   const total = preview.data?.total ?? 0
   const from = rowCount === 0 ? 0 : offset + 1
@@ -316,6 +434,12 @@ export default function Explorer() {
     ? PAGE_SIZES
     : [...PAGE_SIZES, limit].sort((a, b) => a - b)
   const filterCount = filters.filter(filterIsActive).length
+  const activeFilters = filters.filter(filterIsActive)
+  const visibleFilters = activeFilters.slice(0, DATA_FILTER_INFO_MAX)
+  const hiddenFilterCount = Math.max(
+    0,
+    activeFilters.length - DATA_FILTER_INFO_MAX,
+  )
   const totalLabel =
     total < 0 ? '?' : total.toLocaleString()
   const selectedFavorite = selected
@@ -390,6 +514,35 @@ export default function Explorer() {
             {selected ? (
               <span className="kind-badge">{selected.kind}</span>
             ) : null}
+            {visibleFilters.length > 0 ? (
+              <div
+                className="data-filter-info"
+                title={activeFilters
+                  .map(
+                    (f) => `${f.column}: ${formatFilterInfoLabel(f)}`,
+                  )
+                  .join('\n')}
+              >
+                {visibleFilters.map((f) => {
+                  const label = formatFilterInfoLabel(f)
+                  return (
+                    <span
+                      key={`${f.column}\0${normalizeFilterOp(f.op)}\0${label}`}
+                      className="data-filter-chip"
+                      title={`${f.column}: ${label}`}
+                    >
+                      <span className="data-filter-col">{f.column}</span>
+                      <span className="data-filter-val">{label}</span>
+                    </span>
+                  )
+                })}
+                {hiddenFilterCount > 0 ? (
+                  <span className="data-filter-more">
+                    +{hiddenFilterCount}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             {filterCount > 0 ? (
               <button
                 type="button"
@@ -397,7 +550,7 @@ export default function Explorer() {
                 title="Clear all filters"
                 onClick={() => onFiltersChange([])}
               >
-                Clear filters ({filterCount})
+                Clear
               </button>
             ) : null}
             <div className="panel-header-actions">
@@ -496,7 +649,11 @@ export default function Explorer() {
               >
                 <Panel id="grid" minSize={200}>
                   <div className="panel data-grid-panel">
-                    <div className="panel-body">
+                    <div
+                      className="panel-body"
+                      ref={gridScrollRef}
+                      onScroll={onGridScroll}
+                    >
                       {preview.isLoading && !preview.data ? (
                         <div className="empty-hint">
                           <Spinner size="md" label="Loading rows…" block />

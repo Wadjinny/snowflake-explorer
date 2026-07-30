@@ -163,6 +163,17 @@ def _ilike_pattern(expr: str, value: object, kind: str) -> str:
     return f"{expr} ILIKE '{pat}' ESCAPE '\\\\'"
 
 
+def _as_filter_value(value: object, col_type: str) -> object | None:
+    """Normalize facet/filter payloads; map stray null labels back to None."""
+    if value is None:
+        return None
+    if col_type in ("date", "timestamp") and isinstance(value, str):
+        text = value.strip()
+        if text == "" or text.lower() in ("none", "null"):
+            return None
+    return value
+
+
 def build_filter_clause(
     column: str,
     col_type: str,
@@ -232,8 +243,9 @@ def build_filter_clause(
     if not values:
         return None
 
-    has_null = any(v is None for v in values)
-    non_null = [v for v in values if v is not None]
+    normalized = [_as_filter_value(v, col_type) for v in values]
+    has_null = any(v is None for v in normalized)
+    non_null = [v for v in normalized if v is not None]
 
     parts: list[str] = []
     if non_null:

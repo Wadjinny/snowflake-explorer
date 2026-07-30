@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { listDatabases, listObjects, listSchemas } from '../api/snowflake'
+import { listDatabases, listObjects } from '../api/snowflake'
+import {
+  CATALOG_STALE_MS,
+  schemasInDatabase,
+  useAllSchemas,
+} from '../catalogSchemas'
 import {
   buildFavoriteForest,
   hasFavoriteDescendant,
@@ -152,7 +157,11 @@ export default function ObjectTree({
   const databases = useQuery({
     queryKey: ['databases', connection.id],
     queryFn: () => listDatabases(connection),
+    staleTime: CATALOG_STALE_MS,
   })
+
+  // Eager account-wide schemas (shared with DatabaseNode / favorites prune).
+  useAllSchemas(connection)
 
   usePruneStaleFavorites(connection, favorites, replace, databases.data)
 
@@ -681,7 +690,6 @@ function FavoriteSchemaBranch({
 }
 
 function SyntheticSchemaNode({
-  connection,
   database,
   node,
   selected,
@@ -704,16 +712,6 @@ function SyntheticSchemaNode({
   useCollapseOnFold(foldEpoch, setOpen)
   const objects = node.objects
 
-  // Same catalog probe as SchemaNode so favorite leaves get row counts.
-  const catalog = useQuery({
-    queryKey: ['objects', connection.id, database, node.schema],
-    queryFn: () => listObjects(connection, database, node.schema),
-    enabled: open,
-  })
-  const byName = new Map(
-    (catalog.data ?? []).map((o) => [o.name, o] as const),
-  )
-
   return (
     <div role="group">
       <TreeRow
@@ -729,11 +727,9 @@ function SyntheticSchemaNode({
       />
       {open
         ? objects.map((obj, i) => {
-            const fromCatalog = byName.get(obj.name)
             const object: ObjectItem = {
               name: obj.name,
               kind: obj.objectKind,
-              row_count: fromCatalog?.row_count ?? null,
             }
             return (
               <ObjectRow
@@ -939,22 +935,16 @@ function DatabaseNode({
   )
   const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
   useCollapseOnFold(foldEpoch, setOpen)
-  const schemas = useQuery({
-    queryKey: ['schemas', connection.id, database],
-    queryFn: () => listSchemas(connection, database),
-    enabled: open,
-  })
-
-  // Re-open when selection moves into this db (not on every render while selected).
-  useEffect(() => {
-    if (selected?.database === database) setOpen(true)
-  }, [selected?.database, database])
+  const accountSchemas = useAllSchemas(connection)
+  const allSchemas = useMemo(
+    () => schemasInDatabase(accountSchemas.data, database),
+    [accountSchemas.data, database],
+  )
 
   useEffect(() => {
     if (nameMatch) setOpen(true)
   }, [nameMatch])
 
-  const allSchemas = schemas.data ?? []
   const children = useMemo(() => {
     if (!nameFilter) return allSchemas
     const byName = allSchemas.filter((s) =>
@@ -979,14 +969,14 @@ function DatabaseNode({
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
       />
       {open ? (
-        schemas.isLoading ? (
+        accountSchemas.isLoading && !accountSchemas.data ? (
           <TreeStatus rails={childRails(rails, isLast)} loading />
-        ) : schemas.isError ? (
+        ) : accountSchemas.isError ? (
           <TreeStatus
             rails={childRails(rails, isLast)}
             label={
-              schemas.error instanceof Error
-                ? schemas.error.message
+              accountSchemas.error instanceof Error
+                ? accountSchemas.error.message
                 : 'Failed to load schemas'
             }
             error
@@ -1053,13 +1043,8 @@ function SchemaNode({
     queryKey: ['objects', connection.id, database, schema],
     queryFn: () => listObjects(connection, database, schema),
     enabled: open,
+    staleTime: CATALOG_STALE_MS,
   })
-
-  useEffect(() => {
-    if (selected?.database === database && selected?.schema === schema) {
-      setOpen(true)
-    }
-  }, [selected?.database, selected?.schema, database, schema])
 
   useEffect(() => {
     if (nameMatch) setOpen(true)

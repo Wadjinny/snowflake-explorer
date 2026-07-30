@@ -24,7 +24,7 @@ export default function TabBar({ tabs, activeKey, onClose }: Props) {
             aria-selected={active}
           >
             <Link
-              to={objectPathFrom(tab.object)}
+              to={objectPathFrom(tab.object, { filters: tab.filters })}
               className="tab-link"
               title={objectTitle(tab.object)}
             >

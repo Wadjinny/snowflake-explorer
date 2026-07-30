@@ -288,7 +288,13 @@ def facet_periods(
 
     values: list[FacetValue] = []
     for raw_value, count in rows:
-        token = str(serialize_facet_value(raw_value))
+        serialized = serialize_facet_value(raw_value)
+        if serialized is None:
+            values.append(
+                FacetValue(value=None, label="NULL", count=int(count))
+            )
+            continue
+        token = str(serialized)
         # Day values may include time; normalize to YYYY-MM-DD
         if body.grain == "day" and len(token) >= 10 and token[4] == "-":
             token = token[:10]

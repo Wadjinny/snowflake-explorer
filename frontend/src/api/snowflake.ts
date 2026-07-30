@@ -9,6 +9,7 @@ import type {
   ObjectItem,
   PeriodGrain,
   PreviewResult,
+  SchemaItem,
   SortSpec,
 } from '../types'
 import { getDefaultPageSize } from '../pageSizePrefs'
@@ -69,6 +70,13 @@ export function testConnection(connection: Connection): Promise<{ ok: boolean }>
 
 export function listDatabases(connection: Connection): Promise<NameItem[]> {
   return apiFetch(connection, '/api/databases')
+}
+
+/** All schemas in the account (`SHOW TERSE SCHEMAS IN ACCOUNT`). */
+export function listAllSchemas(
+  connection: Connection,
+): Promise<SchemaItem[]> {
+  return apiFetch(connection, '/api/schemas')
 }
 
 export function listSchemas(

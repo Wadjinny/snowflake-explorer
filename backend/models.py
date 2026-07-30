@@ -15,6 +15,13 @@ class NameItem(BaseModel):
     name: str
 
 
+class SchemaItem(BaseModel):
+    """Schema row from an account-wide catalog listing."""
+
+    database: str
+    name: str
+
+
 class ObjectItem(BaseModel):
     name: str
     kind: Literal["table", "view"]
