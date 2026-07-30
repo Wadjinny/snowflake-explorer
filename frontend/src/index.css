@@ -751,6 +751,31 @@ body,
   color: #fff;
 }
 
+.data-table td.cell-range {
+  background: color-mix(in srgb, var(--data) 24%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--data) 65%, transparent);
+}
+
+.data-table th.col-range {
+  background: color-mix(in srgb, var(--data) 20%, var(--raised)) !important;
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--data) 80%, transparent);
+}
+
+.data-table td.cell-selected.cell-range {
+  background: color-mix(in srgb, var(--accent-tint) 70%, var(--data) 30%) !important;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+body.cell-range-selecting {
+  cursor: cell;
+  user-select: none !important;
+}
+
+body.cell-range-selecting * {
+  cursor: cell !important;
+  user-select: none !important;
+}
+
 .empty-hint {
   display: flex;
   align-items: center;
