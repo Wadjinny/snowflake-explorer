@@ -442,6 +442,18 @@ function SelectionsList({
   onRemove: (id: string) => void
   onRename: (selection: SavedSelection) => void | Promise<void>
 }) {
+  const dialog = useDialog()
+
+  const confirmRemove = async (sel: SavedSelection) => {
+    const ok = await dialog.confirm({
+      title: 'Delete selection',
+      message: `Delete "${sel.name}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (ok) onRemove(sel.id)
+  }
+
   return (
     <>
       {selections.map((sel) => {
@@ -484,7 +496,7 @@ function SelectionsList({
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
-                onRemove(sel.id)
+                void confirmRemove(sel)
               }}
             >
               <CloseIcon />
@@ -512,7 +524,7 @@ function TransformationsList({
   const confirmRemove = async (t: SavedTransformation) => {
     const ok = await dialog.confirm({
       title: 'Delete transformation',
-      message: `Delete “${t.name}”? This cannot be undone.`,
+      message: `Delete "${t.name}"? This cannot be undone.`,
       confirmLabel: 'Delete',
       danger: true,
     })
