@@ -325,50 +325,52 @@ export default function TransformWorkspace() {
     if (tab.savedId) updateSaved(tab.savedId, { name: trimmed })
   }
 
-  const onSave = async () => {
-    if (!tab) return
-    const layoutToSave = normalizeTransformLayout(tab.layout)
-    const columnOrderToSave = tab.columnOrder ?? []
-    const columnWidthsToSave = tab.columnWidths ?? {}
-    const pageSizeToSave = tab.pageSize ?? getDefaultPageSize()
-    if (tab.savedId) {
-      updateSaved(tab.savedId, {
-        name: tab.name,
-        recipe: tab.recipe,
-        chart: tab.chart,
+  /** Persist a transform tab. Returns false if the user cancelled naming. */
+  const saveTab = async (
+    target: NonNullable<typeof tab>,
+  ): Promise<boolean> => {
+    const layoutToSave = normalizeTransformLayout(target.layout)
+    const columnOrderToSave = target.columnOrder ?? []
+    const columnWidthsToSave = target.columnWidths ?? {}
+    const pageSizeToSave = target.pageSize ?? getDefaultPageSize()
+    if (target.savedId) {
+      updateSaved(target.savedId, {
+        name: target.name,
+        recipe: target.recipe,
+        chart: target.chart,
         layout: layoutToSave,
         columnOrder: columnOrderToSave,
         columnWidths: columnWidthsToSave,
         pageSize: pageSizeToSave,
       })
-      updateTab(tab.id, {
+      updateTab(target.id, {
         dirty: false,
         layout: layoutToSave,
         columnOrder: columnOrderToSave,
         columnWidths: columnWidthsToSave,
         pageSize: pageSizeToSave,
       })
-      return
+      return true
     }
-    const suggested = tab.name || defaultTransformName(tab.recipe)
+    const suggested = target.name || defaultTransformName(target.recipe)
     const name = await dialog.prompt({
       title: 'Save transformation',
       message: 'Name for the Transformations list.',
       defaultValue: suggested,
       confirmLabel: 'Save',
     })
-    if (name === null) return
+    if (name === null) return false
     const created = addSaved({
       name: name.trim() || suggested,
-      recipe: tab.recipe,
-      chart: tab.chart,
+      recipe: target.recipe,
+      chart: target.chart,
       layout: layoutToSave,
       columnOrder: columnOrderToSave,
       columnWidths: columnWidthsToSave,
       pageSize: pageSizeToSave,
     })
-    if (!created) return
-    updateTab(tab.id, {
+    if (!created) return false
+    updateTab(target.id, {
       savedId: created.id,
       name: created.name,
       dirty: false,
@@ -377,6 +379,12 @@ export default function TransformWorkspace() {
       columnWidths: columnWidthsToSave,
       pageSize: pageSizeToSave,
     })
+    return true
+  }
+
+  const onSave = async () => {
+    if (!tab) return
+    await saveTab(tab)
   }
 
   const onDuplicateDraft = () => {
@@ -402,13 +410,15 @@ export default function TransformWorkspace() {
     const target = tabs.find((t) => t.id === id)
     if (!target) return
     if (target.dirty) {
-      const ok = await dialog.confirm({
+      const choice = await dialog.unsaved({
         title: 'Unsaved changes',
-        message: 'This transform has unsaved changes. Close without saving?',
-        confirmLabel: 'Close',
-        danger: true,
+        message: `"${target.name}" has unsaved changes. Save before closing?`,
       })
-      if (!ok) return
+      if (choice === 'cancel') return
+      if (choice === 'save') {
+        const saved = await saveTab(target)
+        if (!saved) return
+      }
     }
     const idx = tabs.findIndex((t) => t.id === id)
     const next = tabs.filter((t) => t.id !== id)

@@ -5,7 +5,7 @@ import { TransformIcon } from './TreeIcons'
 type Props = {
   tabs: OpenTransformTab[]
   activeId: string | null
-  onClose: (id: string) => void
+  onClose: (id: string) => void | Promise<void>
 }
 
 export default function TransformTabBar({ tabs, activeId, onClose }: Props) {

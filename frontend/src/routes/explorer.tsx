@@ -293,7 +293,41 @@ export default function Explorer() {
     updateActiveTab({ sort: next, offset: 0 })
   }
 
-  const closeTab = (key: string) => {
+  const saveSelectionTab = async (target: OpenTab): Promise<boolean> => {
+    if (!target.selectionId) return true
+    updateSelection(target.selectionId, {
+      name: target.selectionName ?? undefined,
+      object: target.object,
+      filters: target.filters,
+      sort: target.sort,
+      hiddenColumns: target.hiddenColumns,
+      columnOrder: target.columnOrder,
+      columnWidths: target.columnWidths,
+      limit: target.limit,
+    })
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.key === target.key ? { ...t, dirty: false } : t,
+      ),
+    )
+    return true
+  }
+
+  const closeTab = async (key: string) => {
+    const target = tabs.find((t) => t.key === key)
+    if (!target) return
+    if (target.selectionId && target.dirty) {
+      const label = target.selectionName ?? 'Selection'
+      const choice = await dialog.unsaved({
+        title: 'Unsaved changes',
+        message: `"${label}" has unsaved changes. Save before closing?`,
+      })
+      if (choice === 'cancel') return
+      if (choice === 'save') {
+        const saved = await saveSelectionTab(target)
+        if (!saved) return
+      }
+    }
     setTabs((prev) => {
       const idx = prev.findIndex((t) => t.key === key)
       if (idx === -1) return prev

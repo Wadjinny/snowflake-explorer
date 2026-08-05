@@ -32,10 +32,22 @@ type PromptOptions = {
   placeholder?: string
 }
 
+export type UnsavedChoice = 'save' | 'discard' | 'cancel'
+
+type UnsavedOptions = {
+  title?: string
+  message: string
+  saveLabel?: string
+  discardLabel?: string
+  cancelLabel?: string
+}
+
 type DialogApi = {
   alert: (opts: AlertOptions | string) => Promise<void>
   confirm: (opts: ConfirmOptions | string) => Promise<boolean>
   prompt: (opts: PromptOptions) => Promise<string | null>
+  /** Save / Don't save / Cancel for closing dirty tabs. */
+  unsaved: (opts: UnsavedOptions) => Promise<UnsavedChoice>
 }
 
 type ActiveDialog =
@@ -64,6 +76,15 @@ type ActiveDialog =
       cancelLabel: string
       placeholder?: string
       resolve: (value: string | null) => void
+    }
+  | {
+      kind: 'unsaved'
+      title: string
+      message: string
+      saveLabel: string
+      discardLabel: string
+      cancelLabel: string
+      resolve: (choice: UnsavedChoice) => void
     }
 
 const DialogContext = createContext<DialogApi | null>(null)
@@ -117,6 +138,18 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           resolve,
         })
       }),
+    unsaved: (opts) =>
+      new Promise((resolve) => {
+        setActive({
+          kind: 'unsaved',
+          title: opts.title ?? 'Unsaved changes',
+          message: opts.message,
+          saveLabel: opts.saveLabel ?? 'Save',
+          discardLabel: opts.discardLabel ?? "Don't save",
+          cancelLabel: opts.cancelLabel ?? 'Cancel',
+          resolve,
+        })
+      }),
   }
 
   const close = () => setActive(null)
@@ -133,6 +166,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                   active.resolve()
                 } else if (active.kind === 'confirm') {
                   active.resolve(false)
+                } else if (active.kind === 'unsaved') {
+                  active.resolve('cancel')
                 } else {
                   active.resolve(null)
                 }
@@ -143,10 +178,18 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                   active.resolve()
                 } else if (active.kind === 'confirm') {
                   active.resolve(true)
+                } else if (active.kind === 'unsaved') {
+                  active.resolve('save')
                 } else {
                   active.resolve(value ?? '')
                 }
                 close()
+              }}
+              onDiscard={() => {
+                if (active.kind === 'unsaved') {
+                  active.resolve('discard')
+                  close()
+                }
               }}
             />,
             document.body,
@@ -166,10 +209,12 @@ function DialogModal({
   dialog,
   onDismiss,
   onConfirm,
+  onDiscard,
 }: {
   dialog: ActiveDialog
   onDismiss: () => void
   onConfirm: (value?: string) => void
+  onDiscard: () => void
 }) {
   const titleId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -185,7 +230,6 @@ function DialogModal({
       el.select()
       return
     }
-    // Focus primary action for alert/confirm
     const btn = document.querySelector<HTMLButtonElement>(
       '.dialog-modal [data-dialog-primary]',
     )
@@ -206,7 +250,11 @@ function DialogModal({
   const submitPrompt = () => onConfirm(value)
 
   return (
-    <div className="modal-backdrop dialog-backdrop" onClick={onDismiss} role="presentation">
+    <div
+      className="modal-backdrop dialog-backdrop"
+      onClick={onDismiss}
+      role="presentation"
+    >
       <div
         className="modal dialog-modal"
         role="dialog"
@@ -242,26 +290,51 @@ function DialogModal({
         ) : null}
 
         <div className="dialog-actions">
-          {dialog.kind !== 'alert' ? (
-            <button type="button" className="btn" onClick={onDismiss}>
-              {dialog.cancelLabel}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className={
-              dialog.kind === 'confirm' && dialog.danger
-                ? 'btn dialog-btn-danger'
-                : 'btn-primary'
-            }
-            data-dialog-primary
-            onClick={() => {
-              if (dialog.kind === 'prompt') submitPrompt()
-              else onConfirm()
-            }}
-          >
-            {dialog.confirmLabel}
-          </button>
+          {dialog.kind === 'unsaved' ? (
+            <>
+              <button type="button" className="btn" onClick={onDismiss}>
+                {dialog.cancelLabel}
+              </button>
+              <button
+                type="button"
+                className="btn dialog-btn-danger"
+                onClick={onDiscard}
+              >
+                {dialog.discardLabel}
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                data-dialog-primary
+                onClick={() => onConfirm()}
+              >
+                {dialog.saveLabel}
+              </button>
+            </>
+          ) : (
+            <>
+              {dialog.kind !== 'alert' ? (
+                <button type="button" className="btn" onClick={onDismiss}>
+                  {dialog.cancelLabel}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={
+                  dialog.kind === 'confirm' && dialog.danger
+                    ? 'btn dialog-btn-danger'
+                    : 'btn-primary'
+                }
+                data-dialog-primary
+                onClick={() => {
+                  if (dialog.kind === 'prompt') submitPrompt()
+                  else onConfirm()
+                }}
+              >
+                {dialog.confirmLabel}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

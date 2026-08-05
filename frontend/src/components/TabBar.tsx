@@ -6,7 +6,7 @@ import { BookmarkIcon, TableIcon, ViewIcon } from './TreeIcons'
 type Props = {
   tabs: OpenTab[]
   activeKey: string | null
-  onClose: (key: string) => void
+  onClose: (key: string) => void | Promise<void>
 }
 
 export default function TabBar({ tabs, activeKey, onClose }: Props) {
