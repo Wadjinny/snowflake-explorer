@@ -234,8 +234,11 @@ def _run_query_once(
                 return columns, types, rows
             finally:
                 cur.close()
-    except SnowflakeError:
+    except SnowflakeError as exc:
         if not retry:
+            raise
+        # Compilation / identifier errors are not session death; re-raise.
+        if is_sql_compilation_error(exc):
             raise
         # Session may have been closed server-side; drop cache and retry once.
         pool.invalidate(cfg)
@@ -247,12 +250,35 @@ def snowflake_error_detail(exc: SnowflakeError) -> str:
     return msg
 
 
+def is_sql_compilation_error(exc: SnowflakeError) -> bool:
+    """True for client/schema SQL errors (invalid identifier, missing object)."""
+    errno = getattr(exc, "errno", None)
+    # 904 invalid identifier; 2003 object does not exist.
+    if errno in {904, 2003}:
+        return True
+    msg = str(exc).lower()
+    return (
+        "sql compilation error" in msg
+        or "invalid identifier" in msg
+        or "does not exist or not authorized" in msg
+    )
+
+
+def is_invalid_identifier_error(exc: SnowflakeError) -> bool:
+    errno = getattr(exc, "errno", None)
+    if errno == 904:
+        return True
+    return "invalid identifier" in str(exc).lower()
+
+
 # Re-export for callers that want to narrow exception types.
 __all__ = [
     "ProgrammingError",
     "connect",
     "credentials_hash",
     "fqn",
+    "is_invalid_identifier_error",
+    "is_sql_compilation_error",
     "pool",
     "quote_ident",
     "run_query",

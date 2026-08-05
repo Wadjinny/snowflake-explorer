@@ -481,6 +481,36 @@ export default function Explorer() {
     },
   })
 
+  // Drop tab filters/sort/hidden that reference columns removed by a schema change.
+  useEffect(() => {
+    if (!activeKey || !preview.data) return
+    const cols = preview.data.schemaColumns ?? preview.data.columns
+    const known = new Set(cols.map((c) => c.name.toUpperCase()))
+    const nextFilters = filters.filter((f) =>
+      known.has(f.column.toUpperCase()),
+    )
+    const nextSort =
+      sort && known.has(sort.column.toUpperCase()) ? sort : null
+    const nextHidden = hiddenColumns.filter((h) =>
+      known.has(h.toUpperCase()),
+    )
+    const filtersChanged =
+      nextFilters.length !== filters.length ||
+      nextFilters.some((f, i) => f.column !== filters[i]?.column)
+    const sortChanged =
+      (nextSort?.column ?? null) !== (sort?.column ?? null) ||
+      (nextSort?.direction ?? null) !== (sort?.direction ?? null)
+    const hiddenChanged =
+      nextHidden.length !== hiddenColumns.length ||
+      nextHidden.some((h, i) => h !== hiddenColumns[i])
+    if (!filtersChanged && !sortChanged && !hiddenChanged) return
+    updateActiveTab({
+      ...(filtersChanged ? { filters: nextFilters, offset: 0 } : {}),
+      ...(sortChanged ? { sort: nextSort } : {}),
+      ...(hiddenChanged ? { hiddenColumns: nextHidden } : {}),
+    })
+  }, [activeKey, preview.data, filters, sort, hiddenColumns])
+
   useLayoutEffect(() => {
     const el = gridScrollRef.current
     if (!el || !activeKey) return

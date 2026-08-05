@@ -45,17 +45,30 @@ async function apiFetch<T>(
   if (!res.ok) {
     let detail = res.statusText
     try {
-      const body: unknown = await res.json()
-      if (
-        body &&
-        typeof body === 'object' &&
-        'detail' in body &&
-        body.detail != null
-      ) {
-        detail =
-          typeof body.detail === 'string'
-            ? body.detail
-            : JSON.stringify(body.detail)
+      const contentType = res.headers.get('content-type') ?? ''
+      if (contentType.includes('application/json')) {
+        const body: unknown = await res.json()
+        if (
+          body &&
+          typeof body === 'object' &&
+          'detail' in body &&
+          body.detail != null
+        ) {
+          detail =
+            typeof body.detail === 'string'
+              ? body.detail
+              : JSON.stringify(body.detail)
+        }
+      } else {
+        const text = (await res.text()).trim()
+        if (text.startsWith('<!') || text.toLowerCase().includes('<html')) {
+          detail =
+            res.status === 502
+              ? 'Bad gateway from the API (schema change or upstream error). Try refresh.'
+              : `Request failed (${res.status})`
+        } else if (text) {
+          detail = text.slice(0, 400)
+        }
       }
     } catch {
       // keep statusText

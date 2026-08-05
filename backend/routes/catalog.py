@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from snowflake.connector.errors import Error as SnowflakeError
 
+from columns import invalidate_columns
 from deps import get_connection
 from models import NameItem, ObjectItem, SchemaItem, SnowflakeConnection
-from query_cache import catalog_cache
+from query_cache import catalog_cache, facet_cache
 from snowflake_client import credentials_hash, fqn, run_query, snowflake_error_detail
 
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -25,8 +26,11 @@ def _cache_key(cfg: SnowflakeConnection, *parts: str) -> str:
 def invalidate_catalog(
     cfg: SnowflakeConnection = Depends(get_connection),
 ) -> dict[str, bool]:
-    """Drop cached SHOW / INFORMATION_SCHEMA results for this connection."""
-    catalog_cache.clear_prefix(f"cat:{credentials_hash(cfg)}:")
+    """Drop cached catalog / column / facet results for this connection."""
+    cred = credentials_hash(cfg)
+    catalog_cache.clear_prefix(f"cat:{cred}:")
+    invalidate_columns(cfg)
+    facet_cache.clear_prefix(f"facet:{cred}:")
     return {"ok": True}
 
 

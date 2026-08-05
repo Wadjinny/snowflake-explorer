@@ -6,7 +6,12 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException
 from snowflake.connector.errors import Error as SnowflakeError
 
-from columns import ColumnMeta, describe_columns, is_account_usage
+from columns import (
+    ColumnMeta,
+    describe_columns,
+    invalidate_columns,
+    is_account_usage,
+)
 from deps import get_connection
 from filters import (
     FACETABLE,
@@ -18,6 +23,7 @@ from filters import (
     serialize_facet_value,
 )
 from models import (
+    ColumnFilter,
     ColumnInfo,
     ColumnType,
     CountRequest,
@@ -30,11 +36,14 @@ from models import (
     PreviewRequest,
     PreviewResult,
     SnowflakeConnection,
+    SortSpec,
 )
 from query_cache import facet_cache
 from snowflake_client import (
     credentials_hash,
     fqn,
+    is_invalid_identifier_error,
+    is_sql_compilation_error,
     quote_ident,
     run_query,
     run_query_typed,
@@ -173,6 +182,9 @@ def _resolve_total(
         _, count_rows = run_query(cfg, count_sql)
         return int(count_rows[0][0]) if count_rows else 0
     except SnowflakeError as exc:
+        # Let preview/count retry logic refresh stale column metadata.
+        if is_invalid_identifier_error(exc):
+            raise
         logger.warning(
             "COUNT failed for %s: %s", table, snowflake_error_detail(exc)
         )
@@ -182,7 +194,42 @@ def _resolve_total(
 def _http_snowflake(exc: SnowflakeError) -> HTTPException:
     detail = snowflake_error_detail(exc)
     logger.warning("Snowflake error: %s", detail)
-    return HTTPException(status_code=502, detail=detail)
+    # Compilation / missing-column errors are client/schema issues. Use 4xx so
+    # reverse proxies (Cloudflare) do not replace the JSON body with a 502 page.
+    status = 400 if is_sql_compilation_error(exc) else 502
+    return HTTPException(status_code=status, detail=detail)
+
+
+def _meta_name_sets(meta: list[ColumnMeta]) -> tuple[set[str], set[str]]:
+    names = {c.name for c in meta}
+    return names, {n.upper() for n in names}
+
+
+def _column_in_meta(column: str, names: set[str], names_upper: set[str]) -> bool:
+    return column in names or column.upper() in names_upper
+
+
+def _prune_filters(
+    filters: list[ColumnFilter], meta: list[ColumnMeta]
+) -> list[ColumnFilter]:
+    names, names_upper = _meta_name_sets(meta)
+    return [
+        f for f in filters if _column_in_meta(f.column, names, names_upper)
+    ]
+
+
+def _prune_sort(sort: SortSpec | None, meta: list[ColumnMeta]) -> SortSpec | None:
+    if sort is None:
+        return None
+    names, names_upper = _meta_name_sets(meta)
+    if _column_in_meta(sort.column, names, names_upper):
+        return sort
+    return None
+
+
+def _prune_hidden(hidden: list[str], meta: list[ColumnMeta]) -> list[str]:
+    names, names_upper = _meta_name_sets(meta)
+    return [h for h in hidden if _column_in_meta(h, names, names_upper)]
 
 
 def _filters_fingerprint(filters: list[Any]) -> str:
@@ -203,40 +250,35 @@ def _filters_fingerprint(filters: list[Any]) -> str:
     "/databases/{db}/schemas/{schema}/objects/{name}/preview",
     response_model=PreviewResult,
 )
-def preview_object(
+def _run_preview(
+    cfg: SnowflakeConnection,
+    *,
     db: str,
     schema: str,
     name: str,
     body: PreviewRequest,
-    cfg: SnowflakeConnection = Depends(get_connection),
+    meta: list[ColumnMeta],
 ) -> PreviewResult:
     table = fqn(db, schema, name)
-    where = build_where(
-        [(f.column, f.type, f.values, f.op) for f in body.filters]
-    )
+    filters = _prune_filters(body.filters, meta)
+    sort = _prune_sort(body.sort, meta)
+    hidden = _prune_hidden(body.hiddenColumns, meta)
+
+    where = build_where([(f.column, f.type, f.values, f.op) for f in filters])
     order = _order_clause(
-        body.sort.column if body.sort else None,
-        body.sort.direction if body.sort else None,
+        sort.column if sort else None,
+        sort.direction if sort else None,
     )
 
-    try:
-        meta = describe_columns(cfg, db, schema, name)
-    except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
-
-    use_subset = bool(body.distinct and body.hiddenColumns)
-    project = (
-        _project_visible_columns(meta, body.hiddenColumns)
-        if use_subset
-        else meta
-    )
+    use_subset = bool(body.distinct and hidden)
+    project = _project_visible_columns(meta, hidden) if use_subset else meta
     # SELECT DISTINCT requires ORDER BY exprs to appear in the select list.
-    if body.sort and use_subset:
+    if sort and use_subset:
         sort_names = {c.name for c in project}
         sort_upper = {c.name.upper() for c in project}
         if (
-            body.sort.column not in sort_names
-            and body.sort.column.upper() not in sort_upper
+            sort.column not in sort_names
+            and sort.column.upper() not in sort_upper
         ):
             order = ""
 
@@ -263,12 +305,9 @@ def preview_object(
         exact=False,
     )
 
-    try:
-        out_names, out_types, rows = run_query_typed(
-            cfg, data_sql, {"limit": body.limit, "offset": body.offset}
-        )
-    except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+    out_names, out_types, rows = run_query_typed(
+        cfg, data_sql, {"limit": body.limit, "offset": body.offset}
+    )
 
     type_by_name = dict(zip(names, types, strict=True))
     columns = [
@@ -294,35 +333,63 @@ def preview_object(
     )
 
 
-@router.post(
-    "/databases/{db}/schemas/{schema}/objects/{name}/count",
-    response_model=CountResult,
-)
-def count_object(
+def preview_object(
     db: str,
     schema: str,
     name: str,
-    body: CountRequest,
+    body: PreviewRequest,
     cfg: SnowflakeConnection = Depends(get_connection),
-) -> CountResult:
-    """Exact COUNT for the current filters / distinct projection (on demand)."""
-    table = fqn(db, schema, name)
-    where = build_where(
-        [(f.column, f.type, f.values, f.op) for f in body.filters]
-    )
+) -> PreviewResult:
     try:
         meta = describe_columns(cfg, db, schema, name)
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
-    use_subset = bool(body.distinct and body.hiddenColumns)
-    project = (
-        _project_visible_columns(meta, body.hiddenColumns)
-        if use_subset
-        else meta
-    )
+    try:
+        return _run_preview(
+            cfg, db=db, schema=schema, name=name, body=body, meta=meta
+        )
+    except SnowflakeError as exc:
+        # Stale DESC cache after ALTER/DROP COLUMN → refresh once and retry.
+        if not is_invalid_identifier_error(exc):
+            raise _http_snowflake(exc) from exc
+        logger.info(
+            "Preview invalid identifier for %s.%s.%s; refreshing columns",
+            db,
+            schema,
+            name,
+        )
+        invalidate_columns(cfg, db, schema, name)
+        try:
+            meta = describe_columns(cfg, db, schema, name, force=True)
+            return _run_preview(
+                cfg, db=db, schema=schema, name=name, body=body, meta=meta
+            )
+        except SnowflakeError as retry_exc:
+            raise _http_snowflake(retry_exc) from retry_exc
+
+
+@router.post(
+    "/databases/{db}/schemas/{schema}/objects/{name}/count",
+    response_model=CountResult,
+)
+def _run_count(
+    cfg: SnowflakeConnection,
+    *,
+    db: str,
+    schema: str,
+    name: str,
+    body: CountRequest,
+    meta: list[ColumnMeta],
+) -> int:
+    table = fqn(db, schema, name)
+    filters = _prune_filters(body.filters, meta)
+    hidden = _prune_hidden(body.hiddenColumns, meta)
+    where = build_where([(f.column, f.type, f.values, f.op) for f in filters])
+    use_subset = bool(body.distinct and hidden)
+    project = _project_visible_columns(meta, hidden) if use_subset else meta
     from_sql = _preview_select_sql(table, project, distinct=body.distinct)
-    total = _resolve_total(
+    return _resolve_total(
         cfg,
         table=table,
         from_sql=from_sql,
@@ -331,6 +398,37 @@ def count_object(
         heavy=is_account_usage(db, schema),
         exact=True,
     )
+
+
+def count_object(
+    db: str,
+    schema: str,
+    name: str,
+    body: CountRequest,
+    cfg: SnowflakeConnection = Depends(get_connection),
+) -> CountResult:
+    """Exact COUNT for the current filters / distinct projection (on demand)."""
+    try:
+        meta = describe_columns(cfg, db, schema, name)
+    except SnowflakeError as exc:
+        raise _http_snowflake(exc) from exc
+
+    try:
+        total = _run_count(
+            cfg, db=db, schema=schema, name=name, body=body, meta=meta
+        )
+    except SnowflakeError as exc:
+        if not is_invalid_identifier_error(exc):
+            raise _http_snowflake(exc) from exc
+        invalidate_columns(cfg, db, schema, name)
+        try:
+            meta = describe_columns(cfg, db, schema, name, force=True)
+            total = _run_count(
+                cfg, db=db, schema=schema, name=name, body=body, meta=meta
+            )
+        except SnowflakeError as retry_exc:
+            raise _http_snowflake(retry_exc) from retry_exc
+
     if total < 0:
         raise HTTPException(status_code=502, detail="COUNT failed")
     return CountResult(total=total)

@@ -59,6 +59,12 @@ export default function ObjectsPanel({
       void queryClient.invalidateQueries({
         queryKey: ['objects', connection.id],
       })
+      void queryClient.invalidateQueries({
+        queryKey: ['preview', connection.id],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ['facet', connection.id],
+      })
     })()
   }
 

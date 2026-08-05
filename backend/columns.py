@@ -93,14 +93,42 @@ def _fallback_limit0(
     ]
 
 
-def describe_columns(
+def column_cache_key(
     cfg: SnowflakeConnection, db: str, schema: str, name: str
+) -> str:
+    return (
+        f"cols:{credentials_hash(cfg)}:"
+        f"{db.upper()}:{schema.upper()}:{name.upper()}"
+    )
+
+
+def invalidate_columns(
+    cfg: SnowflakeConnection,
+    db: str | None = None,
+    schema: str | None = None,
+    name: str | None = None,
+) -> None:
+    """Drop cached DESC results for one object or the whole connection."""
+    if db is not None and schema is not None and name is not None:
+        column_cache.delete(column_cache_key(cfg, db, schema, name))
+        return
+    column_cache.clear_prefix(f"cols:{credentials_hash(cfg)}:")
+
+
+def describe_columns(
+    cfg: SnowflakeConnection,
+    db: str,
+    schema: str,
+    name: str,
+    *,
+    force: bool = False,
 ) -> list[ColumnMeta]:
     """Return column metadata, preferring DESC TABLE and caching per session."""
-    cache_key = f"cols:{credentials_hash(cfg)}:{db.upper()}:{schema.upper()}:{name.upper()}"
-    cached = column_cache.get(cache_key)
-    if cached is not None:
-        return cached  # type: ignore[no-any-return]
+    cache_key = column_cache_key(cfg, db, schema, name)
+    if not force:
+        cached = column_cache.get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
 
     table = fqn(db, schema, name)
     try:

@@ -44,6 +44,10 @@ class TtlCache:
                 expires_at=time.monotonic() + self._ttl,
             )
 
+    def delete(self, key: str) -> None:
+        with self._guard:
+            self._entries.pop(key, None)
+
     def clear(self) -> None:
         with self._guard:
             self._entries.clear()
