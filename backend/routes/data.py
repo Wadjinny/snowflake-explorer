@@ -246,10 +246,6 @@ def _filters_fingerprint(filters: list[Any]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-@router.post(
-    "/databases/{db}/schemas/{schema}/objects/{name}/preview",
-    response_model=PreviewResult,
-)
 def _run_preview(
     cfg: SnowflakeConnection,
     *,
@@ -333,6 +329,10 @@ def _run_preview(
     )
 
 
+@router.post(
+    "/databases/{db}/schemas/{schema}/objects/{name}/preview",
+    response_model=PreviewResult,
+)
 def preview_object(
     db: str,
     schema: str,
@@ -369,10 +369,6 @@ def preview_object(
             raise _http_snowflake(retry_exc) from retry_exc
 
 
-@router.post(
-    "/databases/{db}/schemas/{schema}/objects/{name}/count",
-    response_model=CountResult,
-)
 def _run_count(
     cfg: SnowflakeConnection,
     *,
@@ -400,6 +396,10 @@ def _run_count(
     )
 
 
+@router.post(
+    "/databases/{db}/schemas/{schema}/objects/{name}/count",
+    response_model=CountResult,
+)
 def count_object(
     db: str,
     schema: str,
