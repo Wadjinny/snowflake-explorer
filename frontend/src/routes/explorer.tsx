@@ -126,8 +126,9 @@ export default function Explorer() {
     new Map<string, { top: number; left: number }>(),
   )
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Last URL selection id we opened a tab for; avoids resurrecting a closed tab when selections updates (e.g. save-on-close). */
+  /** Last URL selection / object we opened a tab for; avoids resurrecting a closed tab before navigate lands. */
   const openedSelectionUrlRef = useRef<string | null>(null)
+  const openedObjectKeyRef = useRef<string | null>(null)
 
   const activeKey = urlSelectionId
     ? selectionTabKey(urlSelectionId)
@@ -143,6 +144,7 @@ export default function Explorer() {
   useEffect(() => {
     scrollPosByTab.current.clear()
     openedSelectionUrlRef.current = null
+    openedObjectKeyRef.current = null
     if (scrollSaveTimer.current) {
       clearTimeout(scrollSaveTimer.current)
       scrollSaveTimer.current = null
@@ -168,9 +170,28 @@ export default function Explorer() {
 
   // URL object → ensure open as tab (browse routes only)
   useEffect(() => {
-    if (!urlObject || !active?.id || isSelectionRoute) return
-    upsertObject(urlObject)
-  }, [urlObject, active?.id, isSelectionRoute, upsertObject])
+    if (!urlObject || !active?.id || isSelectionRoute) {
+      if (!urlObject || isSelectionRoute) openedObjectKeyRef.current = null
+      return
+    }
+    const key = objectKeyFrom(urlObject)
+    const urlChanged = openedObjectKeyRef.current !== key
+    if (urlChanged) {
+      openedObjectKeyRef.current = key
+      upsertObject(urlObject)
+      return
+    }
+    // Same URL after a close: do not recreate the tab. Only sync kind if it still exists.
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.key === key)
+      if (!existing || existing.object.kind === urlObject.kind) return prev
+      return prev.map((t) =>
+        t.key === key
+          ? { ...t, object: { ...t.object, kind: urlObject.kind } }
+          : t,
+      )
+    })
+  }, [urlObject, active?.id, isSelectionRoute, upsertObject, setTabs])
 
   // URL selection → ensure open as tab / redirect if missing
   useEffect(() => {
