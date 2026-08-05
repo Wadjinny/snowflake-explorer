@@ -28,6 +28,7 @@ import {
   buildUnifiedItems,
   fallbackPathAfterClose,
   loadTabOrder,
+  moveHandleBefore,
   parseHandle,
   renameHandleInOrder,
   saveTabOrder,
@@ -40,6 +41,7 @@ type WorkspaceTabsContextValue = {
   items: UnifiedTabItem[]
   order: string[]
   renameBrowseHandle: (oldKey: string, newKey: string) => void
+  reorderTabs: (fromHandle: string, toHandle: string) => void
   closeUnified: (handle: string) => Promise<void>
   /** Persist a transform tab (for close-with-save). Returns false if cancelled. */
   saveTransformTab: (target: OpenTransformTab) => Promise<boolean>
@@ -100,6 +102,21 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
         browseHandle(oldKey),
         browseHandle(newKey),
       )
+      saveTabOrder(activeId, next)
+      return next
+    })
+  }
+
+  const reorderTabs = (fromHandle: string, toHandle: string) => {
+    if (!activeId || fromHandle === toHandle) return
+    setOrder((prev) => {
+      const next = moveHandleBefore(prev, fromHandle, toHandle)
+      if (
+        next.length === prev.length &&
+        next.every((h, i) => h === prev[i])
+      ) {
+        return prev
+      }
       saveTabOrder(activeId, next)
       return next
     })
@@ -285,6 +302,7 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
         items,
         order,
         renameBrowseHandle,
+        reorderTabs,
         closeUnified,
         saveTransformTab,
       }}

@@ -94,6 +94,23 @@ export function renameHandleInOrder(
   return order.map((h) => (h === oldHandle ? newHandle : h))
 }
 
+/** Move `from` to the position of `to` (insert before `to`). */
+export function moveHandleBefore(
+  order: string[],
+  from: string,
+  to: string,
+): string[] {
+  if (from === to) return order
+  const fromIdx = order.indexOf(from)
+  const toIdx = order.indexOf(to)
+  if (fromIdx === -1 || toIdx === -1) return order
+  const next = order.filter((h) => h !== from)
+  const insertAt = next.indexOf(to)
+  if (insertAt === -1) return order
+  next.splice(insertAt, 0, from)
+  return next
+}
+
 export function browseTabItem(tab: OpenTab): UnifiedTabItem {
   const isSelection = Boolean(tab.selectionId)
   const label = isSelection

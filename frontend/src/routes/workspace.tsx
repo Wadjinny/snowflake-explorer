@@ -68,7 +68,7 @@ function WorkspaceShellInner() {
   const { tabs: browseTabs, openSelection } = useBrowseTabs()
   const { openSaved, getTab: getTransformTab } = useTransformTabs()
   const { transformations } = useTransformations()
-  const { items, closeUnified } = useWorkspaceTabs()
+  const { items, closeUnified, reorderTabs } = useWorkspaceTabs()
   const objectsPanelRef = usePanelRef()
   const [objectsCollapsed, setObjectsCollapsed] = useState(false)
   const [objectsLayout] = useState<Layout | undefined>(() => loadObjectsLayout())
@@ -171,6 +171,7 @@ function WorkspaceShellInner() {
             items={items}
             activeHandle={activeHandle}
             onClose={closeUnified}
+            onReorder={reorderTabs}
           />
           <div className="workspace-outlet">
             <Outlet context={outletContext} />
