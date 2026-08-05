@@ -20,6 +20,8 @@ from filters import (
 from models import (
     ColumnInfo,
     ColumnType,
+    CountRequest,
+    CountResult,
     FacetPeriodRequest,
     FacetPeriodResult,
     FacetRequest,
@@ -141,6 +143,42 @@ def _approx_count_sql(table: str, where: str) -> str:
     )
 
 
+def _resolve_total(
+    cfg: SnowflakeConnection,
+    *,
+    table: str,
+    from_sql: str,
+    where: str,
+    distinct: bool,
+    heavy: bool,
+    exact: bool,
+) -> int:
+    """Return row total, or -1 when skipped / failed.
+
+    Account Usage filtered/DISTINCT counts are expensive; skip unless ``exact``.
+    """
+    try:
+        if heavy and (where or distinct) and not exact:
+            return -1
+        if heavy and not exact:
+            _, count_rows = run_query(cfg, _approx_count_sql(table, ""))
+            return int(count_rows[0][0]) if count_rows else 0
+        if distinct:
+            count_sql = (
+                f"SELECT COUNT(*) AS cnt FROM ({from_sql}{where}) AS _distinct"
+            )
+            _, count_rows = run_query(cfg, count_sql)
+            return int(count_rows[0][0]) if count_rows else 0
+        count_sql = f"SELECT COUNT(*) AS cnt FROM {table}{where}"
+        _, count_rows = run_query(cfg, count_sql)
+        return int(count_rows[0][0]) if count_rows else 0
+    except SnowflakeError as exc:
+        logger.warning(
+            "COUNT failed for %s: %s", table, snowflake_error_detail(exc)
+        )
+        return -1
+
+
 def _http_snowflake(exc: SnowflakeError) -> HTTPException:
     detail = snowflake_error_detail(exc)
     logger.warning("Snowflake error: %s", detail)
@@ -213,31 +251,17 @@ def preview_object(
     )
 
     heavy = is_account_usage(db, schema)
-    total = 0
-    try:
-        if heavy and (where or body.distinct):
-            # Filtered / DISTINCT exact COUNT on AU is multi-second;
-            # SAMPLE+WHERE is biased (sample applied before filter).
-            # UI already handles total < 0 as "?".
-            total = -1
-        elif heavy:
-            _, count_rows = run_query(cfg, _approx_count_sql(table, ""))
-            total = int(count_rows[0][0]) if count_rows else 0
-        elif body.distinct:
-            count_sql = (
-                f"SELECT COUNT(*) AS cnt FROM ({from_sql}{where}) AS _distinct"
-            )
-            _, count_rows = run_query(cfg, count_sql)
-            total = int(count_rows[0][0]) if count_rows else 0
-        else:
-            count_sql = f"SELECT COUNT(*) AS cnt FROM {table}{where}"
-            _, count_rows = run_query(cfg, count_sql)
-            total = int(count_rows[0][0]) if count_rows else 0
-    except SnowflakeError as exc:
-        logger.warning(
-            "COUNT failed for %s: %s", table, snowflake_error_detail(exc)
-        )
-        total = -1
+    # Filtered / DISTINCT exact COUNT on Account Usage is multi-second;
+    # UI shows "?" until the client requests /count.
+    total = _resolve_total(
+        cfg,
+        table=table,
+        from_sql=from_sql,
+        where=where,
+        distinct=body.distinct,
+        heavy=heavy,
+        exact=False,
+    )
 
     try:
         out_names, out_types, rows = run_query_typed(
@@ -268,6 +292,48 @@ def preview_object(
         total=total,
         schemaColumns=schema_columns,
     )
+
+
+@router.post(
+    "/databases/{db}/schemas/{schema}/objects/{name}/count",
+    response_model=CountResult,
+)
+def count_object(
+    db: str,
+    schema: str,
+    name: str,
+    body: CountRequest,
+    cfg: SnowflakeConnection = Depends(get_connection),
+) -> CountResult:
+    """Exact COUNT for the current filters / distinct projection (on demand)."""
+    table = fqn(db, schema, name)
+    where = build_where(
+        [(f.column, f.type, f.values, f.op) for f in body.filters]
+    )
+    try:
+        meta = describe_columns(cfg, db, schema, name)
+    except SnowflakeError as exc:
+        raise _http_snowflake(exc) from exc
+
+    use_subset = bool(body.distinct and body.hiddenColumns)
+    project = (
+        _project_visible_columns(meta, body.hiddenColumns)
+        if use_subset
+        else meta
+    )
+    from_sql = _preview_select_sql(table, project, distinct=body.distinct)
+    total = _resolve_total(
+        cfg,
+        table=table,
+        from_sql=from_sql,
+        where=where,
+        distinct=body.distinct,
+        heavy=is_account_usage(db, schema),
+        exact=True,
+    )
+    if total < 0:
+        raise HTTPException(status_code=502, detail="COUNT failed")
+    return CountResult(total=total)
 
 
 @router.post(

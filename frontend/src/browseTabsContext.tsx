@@ -1,7 +1,9 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -13,6 +15,7 @@ import {
   upsertTab,
   type OpenTab,
 } from './openTabs'
+import { objectKeyFrom } from './paths'
 import type { SavedSelection } from './selections'
 import type { SelectedObject } from './types'
 
@@ -33,7 +36,15 @@ type BrowseTabsContextValue = {
   updateTab: (key: string, patch: Partial<OpenTab>) => void
   /** Replace a tab in place (e.g. object key → selection key). */
   replaceTab: (oldKey: string, next: OpenTab) => void
+  /** Open/focus an object tab (clears close-suppress for that key). */
   upsertObject: (object: SelectedObject) => void
+  /**
+   * Ensure a tab exists for the current URL object.
+   * Skips keys that were just closed while the URL still points at them.
+   */
+  ensureUrlObject: (object: SelectedObject) => void
+  /** Drop close-suppress for keys that are no longer the active URL object. */
+  syncCloseSuppress: (urlKey: string | null) => void
   openSelection: (sel: SavedSelection) => void
   removeTab: (key: string) => void
   setTabs: (updater: OpenTab[] | ((prev: OpenTab[]) => OpenTab[])) => void
@@ -44,27 +55,30 @@ const BrowseTabsContext = createContext<BrowseTabsContextValue | null>(null)
 export function BrowseTabsProvider({ children }: { children: ReactNode }) {
   const { activeId } = useConnections()
   const [tabs, setTabsState] = useState<OpenTab[]>([])
+  /** Keys closed while URL may still point at them; block URL auto-reopen. */
+  const closeSuppressRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (!activeId) {
       setTabsState([])
+      closeSuppressRef.current.clear()
       return
     }
     setTabsState(loadTabs(activeId))
+    closeSuppressRef.current.clear()
   }, [activeId])
 
-  const persist = (next: OpenTab[]) => {
-    if (!activeId) return
-    saveTabs(activeId, next)
-  }
-
-  const setTabs = (updater: OpenTab[] | ((prev: OpenTab[]) => OpenTab[])) => {
-    setTabsState((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater
-      persist(next)
-      return next
-    })
-  }
+  const setTabs = useCallback(
+    (updater: OpenTab[] | ((prev: OpenTab[]) => OpenTab[])) => {
+      setTabsState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater
+        if (next === prev) return prev
+        if (activeId) saveTabs(activeId, next)
+        return next
+      })
+    },
+    [activeId],
+  )
 
   const getTab = (key: string) => tabs.find((t) => t.key === key)
 
@@ -93,14 +107,35 @@ export function BrowseTabsProvider({ children }: { children: ReactNode }) {
     )
   }
 
-  const upsertObject = (object: SelectedObject) => {
-    if (!activeId) return
-    setTabs((prev) => upsertTab(prev, object))
-  }
+  const upsertObject = useCallback(
+    (object: SelectedObject) => {
+      if (!activeId) return
+      closeSuppressRef.current.delete(objectKeyFrom(object))
+      setTabs((prev) => upsertTab(prev, object))
+    },
+    [activeId, setTabs],
+  )
+
+  const ensureUrlObject = useCallback(
+    (object: SelectedObject) => {
+      if (!activeId) return
+      const key = objectKeyFrom(object)
+      if (closeSuppressRef.current.has(key)) return
+      setTabs((prev) => upsertTab(prev, object))
+    },
+    [activeId, setTabs],
+  )
+
+  const syncCloseSuppress = useCallback((urlKey: string | null) => {
+    for (const key of [...closeSuppressRef.current]) {
+      if (key !== urlKey) closeSuppressRef.current.delete(key)
+    }
+  }, [])
 
   const openSelection = (sel: SavedSelection) => {
     if (!activeId) return
     const tab = makeSelectionTab(sel)
+    closeSuppressRef.current.delete(tab.key)
     setTabs((prev) => {
       const exists = prev.find((t) => t.key === tab.key)
       if (!exists) return [...prev, tab]
@@ -132,6 +167,7 @@ export function BrowseTabsProvider({ children }: { children: ReactNode }) {
 
   const removeTab = (key: string) => {
     if (!activeId) return
+    closeSuppressRef.current.add(key)
     setTabs((prev) => prev.filter((t) => t.key !== key))
   }
 
@@ -143,6 +179,8 @@ export function BrowseTabsProvider({ children }: { children: ReactNode }) {
         updateTab,
         replaceTab,
         upsertObject,
+        ensureUrlObject,
+        syncCloseSuppress,
         openSelection,
         removeTab,
         setTabs,

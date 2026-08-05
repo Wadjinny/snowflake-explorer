@@ -17,6 +17,7 @@ import {
   type FavoriteDatabaseNode,
   type FavoriteSchemaNode,
 } from '../favorites'
+import { useBrowseTabs } from '../browseTabsContext'
 import { useFavorites } from '../favoritesContext'
 import { useDialog } from '../dialog'
 import { objectPath } from '../paths'
@@ -212,16 +213,6 @@ export default function ObjectTree({
   const showSelections = selections.length > 0
   const showTransformations = transformations.length > 0
 
-  // Prefer DB name matches; otherwise keep full catalog (search applies deeper).
-  const catalogDbs = catalogNeedle
-    ? (() => {
-        const byName = items.filter((d) =>
-          d.name.toLowerCase().includes(catalogNeedle),
-        )
-        return byName.length > 0 ? byName : items
-      })()
-    : items
-
   return (
     <div className="tree" role="tree">
       {showFavorites ? (
@@ -314,7 +305,7 @@ export default function ObjectTree({
         open={sections.catalogOpen}
         onToggle={() => setSection('catalogOpen', !sections.catalogOpen)}
         onFoldAll={() => setCatalogFoldEpoch((n) => n + 1)}
-        count={catalogDbs.length}
+        count={items.length}
         divider={showFavorites || showSelections || showTransformations}
       >
         {items.length === 0 ? (
@@ -327,39 +318,35 @@ export default function ObjectTree({
                 type="search"
                 value={catalogQ}
                 onChange={(e) => setCatalogQ(e.target.value)}
-                placeholder="Filter databases, schemas, tables…"
-                aria-label="Filter catalog"
+                placeholder="Highlight in visible tree…"
+                aria-label="Highlight in visible tree"
               />
               {catalogQ ? (
                 <button
                   type="button"
                   className="btn-micro btn-icon tree-catalog-search-clear"
                   onClick={() => setCatalogQ('')}
-                  title="Clear filter"
-                  aria-label="Clear filter"
+                  title="Clear highlight"
+                  aria-label="Clear highlight"
                 >
                   <CloseIcon />
                 </button>
               ) : null}
             </div>
-            {catalogDbs.length === 0 ? (
-              <div className="empty-hint">No matching databases</div>
-            ) : (
-              catalogDbs.map((db, i) => (
-                <DatabaseNode
-                  key={db.name}
-                  connection={connection}
-                  database={db.name}
-                  selected={selected}
-                  isLast={i === catalogDbs.length - 1}
-                  rails={[]}
-                  defaultOpen={selected?.database === db.name}
-                  nameFilter={catalogNeedle}
-                  favFns={favFns}
-                  foldEpoch={catalogFoldEpoch}
-                />
-              ))
-            )}
+            {items.map((db, i) => (
+              <DatabaseNode
+                key={db.name}
+                connection={connection}
+                database={db.name}
+                selected={selected}
+                isLast={i === items.length - 1}
+                rails={[]}
+                defaultOpen={selected?.database === db.name}
+                highlight={catalogNeedle}
+                favFns={favFns}
+                foldEpoch={catalogFoldEpoch}
+              />
+            ))}
           </>
         )}
       </TreeSection>
@@ -827,6 +814,32 @@ function SyntheticSchemaNode({
   )
 }
 
+/** Case-insensitive substring highlight (Ctrl+F style); does not filter the tree. */
+function highlightLabel(text: string, needle: string): ReactNode {
+  if (!needle) return text
+  const lower = text.toLowerCase()
+  const parts: ReactNode[] = []
+  let start = 0
+  let key = 0
+  while (start <= text.length) {
+    const idx = lower.indexOf(needle, start)
+    if (idx === -1) {
+      if (start < text.length) parts.push(text.slice(start))
+      break
+    }
+    if (idx > start) parts.push(text.slice(start, idx))
+    parts.push(
+      <mark key={key} className="tree-mark">
+        {text.slice(idx, idx + needle.length)}
+      </mark>,
+    )
+    key += 1
+    start = idx + needle.length
+    if (needle.length === 0) break
+  }
+  return parts.length === 1 && typeof parts[0] === 'string' ? parts[0] : parts
+}
+
 function TreeRow({
   rails,
   isLast,
@@ -843,6 +856,7 @@ function TreeRow({
   favorited,
   hasFavoriteChild,
   onToggleFavorite,
+  highlight = '',
 }: {
   rails: Rails
   isLast: boolean
@@ -860,6 +874,8 @@ function TreeRow({
   /** Parent has favorited descendants but is not favorited itself. */
   hasFavoriteChild?: boolean
   onToggleFavorite?: () => void
+  /** Lowercase needle; matching spans in `label` are marked. */
+  highlight?: string
 }) {
   const isRoot = rails.length === 0
   const childHint = Boolean(hasFavoriteChild && !favorited)
@@ -913,7 +929,7 @@ function TreeRow({
       )}
       <span className="tree-icon-slot">{icon}</span>
       <span className="tree-label" title={title ?? label}>
-        {label}
+        {highlightLabel(label, highlight)}
       </span>
       {meta ? (
         <span
@@ -933,6 +949,7 @@ function TreeRow({
         className={className}
         role="treeitem"
         aria-selected={active ?? false}
+        onClick={onClick}
       >
         {body}
       </Link>
@@ -988,7 +1005,7 @@ function DatabaseNode({
   isLast,
   rails,
   defaultOpen,
-  nameFilter = '',
+  highlight = '',
   favFns,
   foldEpoch,
 }: {
@@ -998,35 +1015,19 @@ function DatabaseNode({
   isLast: boolean
   rails: Rails
   defaultOpen: boolean
-  nameFilter?: string
+  highlight?: string
   favFns: FavFns
   foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'database', database }
   const inPath = selected?.database === database
-  const nameMatch = Boolean(
-    nameFilter && database.toLowerCase().includes(nameFilter),
-  )
-  const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
+  const [open, setOpen] = useState(() => defaultOpen || inPath)
   useCollapseOnFold(foldEpoch, setOpen)
   const accountSchemas = useAllSchemas(connection)
   const allSchemas = useMemo(
     () => schemasInDatabase(accountSchemas.data, database),
     [accountSchemas.data, database],
   )
-
-  useEffect(() => {
-    if (nameMatch) setOpen(true)
-  }, [nameMatch])
-
-  const children = useMemo(() => {
-    if (!nameFilter) return allSchemas
-    const byName = allSchemas.filter((s) =>
-      s.name.toLowerCase().includes(nameFilter),
-    )
-    // Prefer schema name matches; otherwise keep all (search applies to tables).
-    return byName.length > 0 ? byName : allSchemas
-  }, [allSchemas, nameFilter])
 
   return (
     <div role="group">
@@ -1038,6 +1039,7 @@ function DatabaseNode({
         onToggle={() => setOpen((v) => !v)}
         icon={<DatabaseIcon />}
         label={database}
+        highlight={highlight}
         favorited={favFns.isFavorite(fav)}
         hasFavoriteChild={favFns.hasFavoriteDescendant(fav)}
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
@@ -1055,23 +1057,23 @@ function DatabaseNode({
             }
             error
           />
-        ) : children.length === 0 ? (
+        ) : allSchemas.length === 0 ? (
           <TreeStatus rails={childRails(rails, isLast)} label="No schemas" />
         ) : (
-          children.map((schema, i) => (
+          allSchemas.map((schema, i) => (
             <SchemaNode
               key={schema.name}
               connection={connection}
               database={database}
               schema={schema.name}
               selected={selected}
-              isLast={i === children.length - 1}
+              isLast={i === allSchemas.length - 1}
               rails={childRails(rails, isLast)}
               defaultOpen={
                 selected?.database === database &&
                 selected?.schema === schema.name
               }
-              nameFilter={nameFilter}
+              highlight={highlight}
               favFns={favFns}
               foldEpoch={foldEpoch}
             />
@@ -1090,7 +1092,7 @@ function SchemaNode({
   isLast,
   rails,
   defaultOpen,
-  nameFilter = '',
+  highlight = '',
   favFns,
   foldEpoch,
 }: {
@@ -1101,17 +1103,14 @@ function SchemaNode({
   isLast: boolean
   rails: Rails
   defaultOpen: boolean
-  nameFilter?: string
+  highlight?: string
   favFns: FavFns
   foldEpoch: number
 }) {
   const fav: Favorite = { kind: 'schema', database, schema }
   const inPath =
     selected?.database === database && selected?.schema === schema
-  const nameMatch = Boolean(
-    nameFilter && schema.toLowerCase().includes(nameFilter),
-  )
-  const [open, setOpen] = useState(() => defaultOpen || inPath || nameMatch)
+  const [open, setOpen] = useState(() => defaultOpen || inPath)
   useCollapseOnFold(foldEpoch, setOpen)
   const objects = useQuery({
     queryKey: objectsQueryKey(connection.id, database, schema),
@@ -1121,17 +1120,7 @@ function SchemaNode({
     gcTime: queryGcTime(CATALOG_STALE_MS),
   })
 
-  useEffect(() => {
-    if (nameMatch) setOpen(true)
-  }, [nameMatch])
-
   const allObjects = objects.data ?? []
-  const children = useMemo(() => {
-    if (!nameFilter) return allObjects
-    return allObjects.filter((o) =>
-      o.name.toLowerCase().includes(nameFilter),
-    )
-  }, [allObjects, nameFilter])
 
   return (
     <div role="group">
@@ -1143,6 +1132,7 @@ function SchemaNode({
         onToggle={() => setOpen((v) => !v)}
         icon={<FolderIcon open={open} />}
         label={schema}
+        highlight={highlight}
         favorited={favFns.isFavorite(fav)}
         hasFavoriteChild={favFns.hasFavoriteDescendant(fav)}
         onToggleFavorite={() => favFns.onToggleFavorite(fav)}
@@ -1160,15 +1150,13 @@ function SchemaNode({
             }
             error
           />
-        ) : children.length === 0 ? (
+        ) : allObjects.length === 0 ? (
           <TreeStatus
             rails={childRails(rails, isLast)}
-            label={
-              nameFilter ? 'No matching tables / views' : 'No tables or views'
-            }
+            label="No tables or views"
           />
         ) : (
-          children.map((obj, i) => (
+          allObjects.map((obj, i) => (
             <ObjectRow
               key={`${obj.kind}:${obj.name}`}
               database={database}
@@ -1179,8 +1167,9 @@ function SchemaNode({
                 selected?.schema === schema &&
                 selected?.name === obj.name
               }
-              isLast={i === children.length - 1}
+              isLast={i === allObjects.length - 1}
               rails={childRails(rails, isLast)}
+              highlight={highlight}
               favFns={favFns}
             />
           ))
@@ -1197,6 +1186,7 @@ function ObjectRow({
   active,
   isLast,
   rails,
+  highlight = '',
   favFns,
 }: {
   database: string
@@ -1205,8 +1195,10 @@ function ObjectRow({
   active: boolean
   isLast: boolean
   rails: Rails
+  highlight?: string
   favFns: FavFns
 }) {
+  const { upsertObject } = useBrowseTabs()
   const fav: Favorite = {
     kind: 'object',
     database,
@@ -1222,6 +1214,12 @@ function ObjectRow({
     object.kind === 'table' && object.row_count != null
       ? `${object.name} · ${object.row_count.toLocaleString()} rows`
       : object.name
+  const selectedObject: SelectedObject = {
+    database,
+    schema,
+    name: object.name,
+    kind: object.kind,
+  }
 
   return (
     <TreeRow
@@ -1232,7 +1230,9 @@ function ObjectRow({
       title={title}
       active={active}
       to={objectPath(database, schema, object.name, object.kind)}
+      onClick={() => upsertObject(selectedObject)}
       meta={count ?? object.kind}
+      highlight={highlight}
       favorited={favFns.isFavorite(fav)}
       onToggleFavorite={() => favFns.onToggleFavorite(fav)}
     />

@@ -74,6 +74,10 @@ export type SortSpec = {
   direction: SortDirection
 }
 
+export type CountResult = {
+  total: number
+}
+
 export type PreviewResult = {
   columns: ColumnInfo[]
   rows: (string | number | boolean | null)[][]

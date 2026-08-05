@@ -8,6 +8,7 @@ import type {
   NameItem,
   ObjectItem,
   PeriodGrain,
+  CountResult,
   PreviewResult,
   SchemaItem,
   SortSpec,
@@ -129,6 +130,30 @@ export function previewObject(
         offset,
         filters,
         sort,
+        distinct,
+        hiddenColumns: distinct ? hiddenColumns : [],
+      }),
+    },
+  )
+}
+
+export function countObject(
+  connection: Connection,
+  database: string,
+  schema: string,
+  name: string,
+  filters: ColumnFilter[] = [],
+  distinct = false,
+  hiddenColumns: string[] = [],
+): Promise<CountResult> {
+  return apiFetch(
+    connection,
+    `/api/databases/${encodeURIComponent(database)}/schemas/${encodeURIComponent(schema)}/objects/${encodeURIComponent(name)}/count`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filters,
         distinct,
         hiddenColumns: distinct ? hiddenColumns : [],
       }),

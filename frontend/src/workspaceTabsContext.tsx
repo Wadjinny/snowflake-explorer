@@ -2,9 +2,11 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
+import { flushSync } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router'
 import { useBrowseTabs } from './browseTabsContext'
 import { useConnections } from './connections'
@@ -60,6 +62,10 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
   const { update: updateSelection } = useSelections()
   const { add: addSaved, update: updateSaved } = useTransformations()
   const [order, setOrder] = useState<string[]>([])
+  const browseTabsRef = useRef(browseTabs)
+  const transformTabsRef = useRef(transformTabs)
+  browseTabsRef.current = browseTabs
+  transformTabsRef.current = transformTabs
 
   useEffect(() => {
     if (!activeId) {
@@ -174,9 +180,11 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
     const parsed = parseHandle(handle)
     if (!parsed) return
     const isActive = isHandleActive(handle)
+    const liveBrowse = browseTabsRef.current
+    const liveTransform = transformTabsRef.current
 
     if (parsed.kind === 'browse') {
-      const target = browseTabs.find((t) => t.key === parsed.id)
+      const target = liveBrowse.find((t) => t.key === parsed.id)
       if (!target) return
       if (target.selectionId && target.dirty) {
         const label = target.selectionName ?? 'Selection'
@@ -199,26 +207,38 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
           })
         }
       }
-      const nextBrowse = browseTabs.filter((t) => t.key !== parsed.id)
+      // Re-read after possible async dialog so neighbor path matches live tabs.
+      const browseNow = browseTabsRef.current
+      const transformNow = transformTabsRef.current
+      const nextBrowse = browseNow.filter((t) => t.key !== parsed.id)
       const nextPath = fallbackPathAfterClose(
         order,
         handle,
         nextBrowse,
-        transformTabs,
+        transformNow,
       )
+      // Navigate before remove; removeTab also suppresses URL auto-reopen.
+      if (isActive) {
+        flushSync(() => {
+          navigate(nextPath, { replace: true })
+        })
+      }
       removeTab(parsed.id)
       if (activeId) {
         setOrder((prev) => {
-          const next = prev.filter((h) => h !== handle)
+          const next = syncTabOrder(
+            prev.filter((h) => h !== handle),
+            nextBrowse,
+            transformNow,
+          )
           saveTabOrder(activeId, next)
           return next
         })
       }
-      if (isActive) navigate(nextPath, { replace: true })
       return
     }
 
-    const target = transformTabs.find((t) => t.id === parsed.id)
+    const target = liveTransform.find((t) => t.id === parsed.id)
     if (!target) return
     if (target.dirty) {
       const choice = await dialog.unsaved({
@@ -231,22 +251,32 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
         if (!saved) return
       }
     }
-    const nextTransform = transformTabs.filter((t) => t.id !== parsed.id)
+    const browseNow = browseTabsRef.current
+    const transformNow = transformTabsRef.current
+    const nextTransform = transformNow.filter((t) => t.id !== parsed.id)
     const nextPath = fallbackPathAfterClose(
       order,
       handle,
-      browseTabs,
+      browseNow,
       nextTransform,
     )
+    if (isActive) {
+      flushSync(() => {
+        navigate(nextPath, { replace: true })
+      })
+    }
     closeTransformTab(parsed.id)
     if (activeId) {
       setOrder((prev) => {
-        const next = prev.filter((h) => h !== handle)
+        const next = syncTabOrder(
+          prev.filter((h) => h !== handle),
+          browseNow,
+          nextTransform,
+        )
         saveTabOrder(activeId, next)
         return next
       })
     }
-    if (isActive) navigate(nextPath, { replace: true })
   }
 
   return (

@@ -1177,6 +1177,19 @@ a.tree-row:hover {
   color: #fff;
 }
 
+/* Ctrl+F-style find highlight in the catalog tree */
+.tree-mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: #6b5420;
+  color: #f0e6c8;
+}
+
+.tree-row.active .tree-mark {
+  background: #c9a227;
+  color: #1e1e1e;
+}
+
 .kind-badge {
   font-size: 9px;
   letter-spacing: 0.3px;
@@ -1566,6 +1579,29 @@ body.col-resizing * {
 .pager-total {
   font-family: var(--mono);
   color: var(--data);
+}
+
+button.pager-total-unknown {
+  font-family: var(--mono);
+  color: var(--data);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--data) 55%, transparent);
+}
+
+button.pager-total-unknown:hover:not(:disabled) {
+  color: var(--data-bright);
+  text-decoration-color: var(--data-bright);
+}
+
+button.pager-total-unknown:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 .data-table th .th-type {

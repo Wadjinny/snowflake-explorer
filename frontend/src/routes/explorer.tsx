@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   useNavigate,
@@ -8,7 +8,7 @@ import {
   useLocation,
 } from 'react-router'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
-import { previewObject } from '../api/snowflake'
+import { countObject, previewObject } from '../api/snowflake'
 import ColumnPicker from '../components/ColumnPicker'
 import DataGrid from '../components/DataGrid'
 import DetailInspector, {
@@ -56,6 +56,7 @@ import { useTransformTabs } from '../transformTabsContext'
 import type {
   ColumnFilter,
   ObjectKind,
+  PreviewResult,
   SelectedObject,
   SortSpec,
 } from '../types'
@@ -108,7 +109,8 @@ export default function Explorer() {
     tabs,
     setTabs,
     updateTab,
-    upsertObject,
+    ensureUrlObject,
+    syncCloseSuppress,
   } = useBrowseTabs()
   const { objectsCollapsed, toggleObjectsPanel } =
     useOutletContext<WorkspaceOutletContext>()
@@ -126,9 +128,8 @@ export default function Explorer() {
     new Map<string, { top: number; left: number }>(),
   )
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Last URL selection / object we opened a tab for; avoids resurrecting a closed tab before navigate lands. */
+  /** Last URL selection we opened a tab for; avoids resurrecting a closed tab when selections refresh. */
   const openedSelectionUrlRef = useRef<string | null>(null)
-  const openedObjectKeyRef = useRef<string | null>(null)
 
   const activeKey = urlSelectionId
     ? selectionTabKey(urlSelectionId)
@@ -144,7 +145,6 @@ export default function Explorer() {
   useEffect(() => {
     scrollPosByTab.current.clear()
     openedSelectionUrlRef.current = null
-    openedObjectKeyRef.current = null
     if (scrollSaveTimer.current) {
       clearTimeout(scrollSaveTimer.current)
       scrollSaveTimer.current = null
@@ -168,30 +168,20 @@ export default function Explorer() {
     }
   }, [tabs])
 
-  // URL object → ensure open as tab (browse routes only)
+  // URL object → ensure open as tab (browse routes only).
+  // removeTab suppresses reopen for that key until the URL moves away (or tree re-opens it).
   useEffect(() => {
-    if (!urlObject || !active?.id || isSelectionRoute) {
-      if (!urlObject || isSelectionRoute) openedObjectKeyRef.current = null
-      return
-    }
-    const key = objectKeyFrom(urlObject)
-    const urlChanged = openedObjectKeyRef.current !== key
-    if (urlChanged) {
-      openedObjectKeyRef.current = key
-      upsertObject(urlObject)
-      return
-    }
-    // Same URL after a close: do not recreate the tab. Only sync kind if it still exists.
-    setTabs((prev) => {
-      const existing = prev.find((t) => t.key === key)
-      if (!existing || existing.object.kind === urlObject.kind) return prev
-      return prev.map((t) =>
-        t.key === key
-          ? { ...t, object: { ...t.object, kind: urlObject.kind } }
-          : t,
-      )
-    })
-  }, [urlObject, active?.id, isSelectionRoute, upsertObject, setTabs])
+    const key = urlObject ? objectKeyFrom(urlObject) : null
+    syncCloseSuppress(key)
+    if (!urlObject || !active?.id || isSelectionRoute) return
+    ensureUrlObject(urlObject)
+  }, [
+    urlObject,
+    active?.id,
+    isSelectionRoute,
+    ensureUrlObject,
+    syncCloseSuppress,
+  ])
 
   // URL selection → ensure open as tab / redirect if missing
   useEffect(() => {
@@ -416,20 +406,21 @@ export default function Explorer() {
     if (!columnsOpen) setHoverColumn(null)
   }, [columnsOpen])
 
+  const previewQueryKey = [
+    'preview',
+    active?.id,
+    selected?.database,
+    selected?.schema,
+    selected?.name,
+    limit,
+    offset,
+    filters,
+    sort,
+    distinct,
+    distinct ? hiddenColumns : [],
+  ] as const
   const preview = useQuery({
-    queryKey: [
-      'preview',
-      active?.id,
-      selected?.database,
-      selected?.schema,
-      selected?.name,
-      limit,
-      offset,
-      filters,
-      sort,
-      distinct,
-      distinct ? hiddenColumns : [],
-    ],
+    queryKey: previewQueryKey,
     queryFn: () => {
       if (!active || !selected) throw new Error('No selection')
       return previewObject(
@@ -460,6 +451,33 @@ export default function Explorer() {
         return previousData
       }
       return undefined
+    },
+  })
+
+  const queryClient = useQueryClient()
+  const countMut = useMutation({
+    mutationFn: () => {
+      if (!active || !selected) throw new Error('No selection')
+      return countObject(
+        active,
+        selected.database,
+        selected.schema,
+        selected.name,
+        filters,
+        distinct,
+        hiddenColumns,
+      )
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData<PreviewResult>(previewQueryKey, (old) =>
+        old ? { ...old, total: data.total } : old,
+      )
+    },
+    onError: (err) => {
+      void dialog.alert({
+        title: 'Count failed',
+        message: err instanceof Error ? err.message : String(err),
+      })
     },
   })
 
@@ -508,8 +526,6 @@ export default function Explorer() {
     0,
     activeFilters.length - DATA_FILTER_INFO_MAX,
   )
-  const totalLabel =
-    total < 0 ? '?' : total.toLocaleString()
   const selectedFavorite = selected
     ? ({
         kind: 'object' as const,
@@ -790,10 +806,28 @@ export default function Explorer() {
                 </div>
                 <div className="pager">
                   <span className="pager-meta">
-                    {preview.isFetching ? <Spinner size="sm" /> : null}
+                    {preview.isFetching || countMut.isPending ? (
+                      <Spinner size="sm" />
+                    ) : null}
                     <span>
                       Rows {from.toLocaleString()}–{to.toLocaleString()} of{' '}
-                      <span className="pager-total">{totalLabel}</span>
+                      {total < 0 ? (
+                        <button
+                          type="button"
+                          className="pager-total pager-total-unknown"
+                          title="Fetch exact row count"
+                          disabled={
+                            countMut.isPending || !active || !selected
+                          }
+                          onClick={() => countMut.mutate()}
+                        >
+                          ?
+                        </button>
+                      ) : (
+                        <span className="pager-total">
+                          {total.toLocaleString()}
+                        </span>
+                      )}
                       {filters.length > 0 ? ' (filtered)' : ''}
                     </span>
                   </span>

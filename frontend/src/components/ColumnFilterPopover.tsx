@@ -221,18 +221,13 @@ export default function ColumnFilterPopover({
       ? BOOLEAN_FILTER_OPS
       : STRING_FILTER_OPS
 
-  const valueApplied = useMemo(
-    () => findApplied(appliedFilters, 'in'),
-    [appliedFilters],
-  )
-  const relativeApplied = useMemo(
-    () => findRelativeApplied(appliedFilters),
-    [appliedFilters],
-  )
-  const condApplied = useMemo(
-    () =>
-      appliedFilters.filter((f) => isConditionOp(normalizeFilterOp(f.op))),
-    [appliedFilters],
+  // Draft state is initialized once on mount. The popover unmounts when closed,
+  // so we must not sync from appliedFilters on every parent re-render (that
+  // wiped checkbox drafts and raced Apply).
+  const valueApplied = findApplied(appliedFilters, 'in')
+  const relativeApplied = findRelativeApplied(appliedFilters)
+  const condApplied = appliedFilters.filter((f) =>
+    isConditionOp(normalizeFilterOp(f.op)),
   )
 
   const [mode, setMode] = useState<Mode>(() =>
@@ -244,6 +239,8 @@ export default function ColumnFilterPopover({
   const [selected, setSelected] = useState<FilterValue[]>(
     () => valueApplied?.values ?? [],
   )
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   const [relativeOp, setRelativeOp] = useState<FilterOp | null>(
     () => relativeApplied,
   )
@@ -295,32 +292,6 @@ export default function ColumnFilterPopover({
     }, 250)
     return () => window.clearTimeout(t)
   }, [q])
-
-  useEffect(() => {
-    setSelected(valueApplied?.values ?? [])
-    setRelativeOp(relativeApplied)
-    const nextOps = new Set(
-      condApplied.map((f) => normalizeFilterOp(f.op)).filter(isConditionOp),
-    )
-    setCondOps(nextOps)
-    const nextPatterns: Partial<Record<PatternOp, string>> = {}
-    for (const op of ['has', 'startswith', 'endswith'] as const) {
-      const f = findApplied(condApplied, op)
-      if (f?.values[0] != null) nextPatterns[op] = String(f.values[0])
-    }
-    setPatterns(nextPatterns)
-    const gt = findApplied(condApplied, 'gt')
-    setGtVal(gt?.values[0] != null ? String(gt.values[0]) : '')
-    const lt = findApplied(condApplied, 'lt')
-    setLtVal(lt?.values[0] != null ? String(lt.values[0]) : '')
-    const between = findApplied(condApplied, 'between')
-    setBetweenLow(
-      between?.values[0] != null ? String(between.values[0]) : '',
-    )
-    setBetweenHigh(
-      between?.values[1] != null ? String(between.values[1]) : '',
-    )
-  }, [valueApplied, condApplied, relativeApplied])
 
   useEffect(() => {
     if (hasOtherFilters) setMatchOtherFilters(true)
@@ -565,10 +536,11 @@ export default function ColumnFilterPopover({
       onClose()
       return
     }
-    if (selected.length === 0) {
+    const values = selectedRef.current
+    if (values.length === 0) {
       onApply([])
     } else {
-      onApply([{ column, type, values: selected, op: 'in' }])
+      onApply([{ column, type, values, op: 'in' }])
     }
     onClose()
   }

@@ -107,6 +107,18 @@ class PreviewRequest(BaseModel):
     hiddenColumns: list[str] = Field(default_factory=list)
 
 
+class CountRequest(BaseModel):
+    """Exact row count for the current preview filters / distinct projection."""
+
+    filters: list[ColumnFilter] = Field(default_factory=list)
+    distinct: bool = False
+    hiddenColumns: list[str] = Field(default_factory=list)
+
+
+class CountResult(BaseModel):
+    total: int
+
+
 class FacetRequest(BaseModel):
     column: str = Field(min_length=1)
     type: FacetableType
