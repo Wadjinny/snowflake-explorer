@@ -514,6 +514,10 @@ export default function Explorer() {
   const total = preview.data?.total ?? 0
   const from = rowCount === 0 ? 0 : offset + 1
   const to = offset + rowCount
+  const schemaCols =
+    preview.data?.schemaColumns ?? preview.data?.columns ?? []
+  const colCount = schemaCols.length
+  const visibleColCount = Math.max(0, colCount - hiddenColumns.length)
   const canPrev = offset > 0
   const canNext = total < 0 ? rowCount >= limit : offset + rowCount < total
   const pageSizeOptions = PAGE_SIZES.includes(limit)
@@ -829,6 +833,15 @@ export default function Explorer() {
                         </span>
                       )}
                       {filters.length > 0 ? ' (filtered)' : ''}
+                      {colCount > 0 ? (
+                        <>
+                          {' · '}
+                          {visibleColCount < colCount
+                            ? `${visibleColCount.toLocaleString()}/${colCount.toLocaleString()}`
+                            : colCount.toLocaleString()}{' '}
+                          cols
+                        </>
+                      ) : null}
                     </span>
                   </span>
                   <div className="toolbar">
