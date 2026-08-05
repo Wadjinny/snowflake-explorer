@@ -51,7 +51,7 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
   const dialog = useDialog()
-  const { tabs: browseTabs, updateTab, removeTab } = useBrowseTabs()
+  const { tabs: browseTabs, removeTab } = useBrowseTabs()
   const {
     tabs: transformTabs,
     updateTab: updateTransformTab,
@@ -197,7 +197,6 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
             columnWidths: target.columnWidths,
             limit: target.limit,
           })
-          updateTab(target.key, { dirty: false })
         }
       }
       const nextBrowse = browseTabs.filter((t) => t.key !== parsed.id)

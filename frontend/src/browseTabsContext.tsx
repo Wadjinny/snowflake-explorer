@@ -112,6 +112,7 @@ export function BrowseTabsProvider({ children }: { children: ReactNode }) {
                 ? {
                     filters: t.filters,
                     sort: t.sort,
+                    distinct: t.distinct,
                     limit: t.limit,
                     offset: t.offset,
                     hiddenColumns: t.hiddenColumns,

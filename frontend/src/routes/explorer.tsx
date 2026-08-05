@@ -126,6 +126,8 @@ export default function Explorer() {
     new Map<string, { top: number; left: number }>(),
   )
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Last URL selection id we opened a tab for; avoids resurrecting a closed tab when selections updates (e.g. save-on-close). */
+  const openedSelectionUrlRef = useRef<string | null>(null)
 
   const activeKey = urlSelectionId
     ? selectionTabKey(urlSelectionId)
@@ -140,6 +142,7 @@ export default function Explorer() {
   // Clear scroll state when connection changes
   useEffect(() => {
     scrollPosByTab.current.clear()
+    openedSelectionUrlRef.current = null
     if (scrollSaveTimer.current) {
       clearTimeout(scrollSaveTimer.current)
       scrollSaveTimer.current = null
@@ -171,7 +174,10 @@ export default function Explorer() {
 
   // URL selection → ensure open as tab / redirect if missing
   useEffect(() => {
-    if (!urlSelectionId || !active?.id) return
+    if (!urlSelectionId || !active?.id) {
+      if (!urlSelectionId) openedSelectionUrlRef.current = null
+      return
+    }
     const sel = selections.find((s) => s.id === urlSelectionId)
     if (!sel) {
       setTabs((prev) =>
@@ -180,10 +186,17 @@ export default function Explorer() {
       navigate('/', { replace: true })
       return
     }
+    const urlChanged = openedSelectionUrlRef.current !== urlSelectionId
+    if (urlChanged) openedSelectionUrlRef.current = urlSelectionId
     setTabs((prev) => {
       const key = selectionTabKey(sel.id)
       const exists = prev.find((t) => t.key === key)
-      if (!exists) return [...prev, makeSelectionTab(sel)]
+      if (!exists) {
+        // Only open when the URL selection changes. If selections updates while
+        // the tab was just closed (save-on-close), do not resurrect it.
+        if (!urlChanged) return prev
+        return [...prev, makeSelectionTab(sel)]
+      }
       if (exists.selectionName !== sel.name) {
         return prev.map((t) =>
           t.key === key ? { ...t, selectionName: sel.name } : t,
