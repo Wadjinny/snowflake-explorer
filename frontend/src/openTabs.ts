@@ -1,6 +1,7 @@
 import type { ColumnFilter, SelectedObject, SortSpec } from './types'
 import { BROWSE_PAGE_SIZE_MAX, getDefaultPageSize } from './pageSizePrefs'
-import { objectKeyFrom } from './paths'
+import { objectKeyFrom, objectPathFrom } from './paths'
+import { selectionPath, type SavedSelection } from './selections'
 
 export type OpenTab = {
   key: string
@@ -18,6 +19,22 @@ export type OpenTab = {
   /** Data grid panel scroll (restored when switching tabs). */
   scrollTop: number
   scrollLeft: number
+  /** Linked saved selection id, if this tab was opened from Selections. */
+  selectionId: string | null
+  /** Display name of the linked selection (session copy; synced from storage). */
+  selectionName: string | null
+  /** True when linked selection view state differs from the saved bookmark. */
+  dirty: boolean
+}
+
+/** Session tab key for a selection-linked browse tab. */
+export function selectionTabKey(selectionId: string): string {
+  return `s:${selectionId}`
+}
+
+export function tabPath(tab: OpenTab): string {
+  if (tab.selectionId) return selectionPath(tab.selectionId)
+  return objectPathFrom(tab.object, { filters: tab.filters })
 }
 
 function storageKey(connectionId: string): string {
@@ -49,6 +66,15 @@ function isOpenTab(value: unknown): value is OpenTab {
   const scrollOk =
     (t.scrollTop === undefined || isFiniteNumber(t.scrollTop)) &&
     (t.scrollLeft === undefined || isFiniteNumber(t.scrollLeft))
+  const selectionIdOk =
+    t.selectionId === undefined ||
+    t.selectionId === null ||
+    typeof t.selectionId === 'string'
+  const selectionNameOk =
+    t.selectionName === undefined ||
+    t.selectionName === null ||
+    typeof t.selectionName === 'string'
+  const dirtyOk = t.dirty === undefined || typeof t.dirty === 'boolean'
   return (
     typeof t.key === 'string' &&
     !!obj &&
@@ -63,11 +89,22 @@ function isOpenTab(value: unknown): value is OpenTab {
     hiddenOk &&
     orderOk &&
     widthsOk &&
-    scrollOk
+    scrollOk &&
+    selectionIdOk &&
+    selectionNameOk &&
+    dirtyOk
   )
 }
 
 function normalizeTab(tab: OpenTab): OpenTab {
+  const selectionId =
+    typeof tab.selectionId === 'string' && tab.selectionId
+      ? tab.selectionId
+      : null
+  const selectionName =
+    typeof tab.selectionName === 'string' && tab.selectionName
+      ? tab.selectionName
+      : null
   return {
     ...tab,
     hiddenColumns: Array.isArray(tab.hiddenColumns) ? tab.hiddenColumns : [],
@@ -80,6 +117,10 @@ function normalizeTab(tab: OpenTab): OpenTab {
     scrollLeft: isFiniteNumber(tab.scrollLeft)
       ? Math.max(0, tab.scrollLeft)
       : 0,
+    selectionId,
+    selectionName,
+    dirty: Boolean(tab.dirty) && selectionId !== null,
+    key: selectionId ? selectionTabKey(selectionId) : tab.key,
   }
 }
 
@@ -116,6 +157,28 @@ export function makeTab(object: SelectedObject): OpenTab {
     columnWidths: {},
     scrollTop: 0,
     scrollLeft: 0,
+    selectionId: null,
+    selectionName: null,
+    dirty: false,
+  }
+}
+
+export function makeSelectionTab(sel: SavedSelection): OpenTab {
+  return {
+    key: selectionTabKey(sel.id),
+    object: sel.object,
+    filters: sel.filters,
+    sort: sel.sort,
+    limit: sel.limit,
+    offset: 0,
+    hiddenColumns: sel.hiddenColumns,
+    columnOrder: sel.columnOrder,
+    columnWidths: sel.columnWidths ?? {},
+    scrollTop: 0,
+    scrollLeft: 0,
+    selectionId: sel.id,
+    selectionName: sel.name,
+    dirty: false,
   }
 }
 

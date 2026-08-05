@@ -25,7 +25,10 @@ import { useDialog } from '../dialog'
 import { useFavorites } from '../favoritesContext'
 import {
   loadTabs,
+  makeSelectionTab,
   saveTabs,
+  selectionTabKey,
+  tabPath,
   upsertTab,
   type OpenTab,
 } from '../openTabs'
@@ -43,6 +46,7 @@ import {
 } from '../paths'
 import {
   defaultSelectionName,
+  selectionPath,
   type SavedSelection,
 } from '../selections'
 import { useSelections } from '../selectionsContext'
@@ -59,6 +63,16 @@ import { filterChipLabels, filterIsActive, normalizeColumnFilter, normalizeFilte
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 const DATA_FILTER_INFO_MAX = 5
+
+/** View-state fields that dirty a linked selection when changed. */
+const SELECTION_DIRTY_KEYS: ReadonlyArray<keyof OpenTab> = [
+  'filters',
+  'sort',
+  'hiddenColumns',
+  'columnOrder',
+  'columnWidths',
+  'limit',
+]
 
 function formatFilterInfoLabel(filter: ColumnFilter): string {
   const chips = filterChipLabels(filter)
@@ -85,14 +99,21 @@ function useSelectedFromUrl(): SelectedObject | null {
 export default function Explorer() {
   const navigate = useNavigate()
   const location = useLocation()
+  const params = useParams()
   const [searchParams] = useSearchParams()
   const dialog = useDialog()
   const { active } = useConnections()
   const { isFavorite, toggle: toggleFavorite } = useFavorites()
-  const { add: addSelection } = useSelections()
+  const {
+    selections,
+    add: addSelection,
+    update: updateSelection,
+    rename: renameSelection,
+  } = useSelections()
   const { transformations } = useTransformations()
   const { openDraft, openSaved } = useTransformTabs()
   const urlObject = useSelectedFromUrl()
+  const urlSelectionId = params.selectionId ?? null
   const objectsPanelRef = usePanelRef()
   const [objectsCollapsed, setObjectsCollapsed] = useState(false)
   const [tabs, setTabs] = useState<OpenTab[]>([])
@@ -109,10 +130,15 @@ export default function Explorer() {
   )
   const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const activeKey = urlObject ? objectKeyFrom(urlObject) : null
+  const activeKey = urlSelectionId
+    ? selectionTabKey(urlSelectionId)
+    : urlObject
+      ? objectKeyFrom(urlObject)
+      : null
   const activeTab = tabs.find((t) => t.key === activeKey) ?? null
   const filtersSearchRaw = searchParams.get('f')
   const urlHasFiltersParam = searchParams.has('f')
+  const isSelectionRoute = Boolean(urlSelectionId)
 
   // Load tabs when connection changes
   const prevConnectionId = useRef<string | undefined>(undefined)
@@ -157,15 +183,40 @@ export default function Explorer() {
     saveTabs(active.id, tabs)
   }, [active?.id, tabs])
 
-  // URL object → ensure open as tab
+  // URL object → ensure open as tab (browse routes only)
   useEffect(() => {
-    if (!urlObject || !active?.id) return
+    if (!urlObject || !active?.id || isSelectionRoute) return
     setTabs((prev) => upsertTab(prev, urlObject))
-  }, [urlObject, active?.id])
+  }, [urlObject, active?.id, isSelectionRoute])
 
-  // URL `f` → active tab filters (only when the param is present).
+  // URL selection → ensure open as tab / redirect if missing
   useEffect(() => {
-    if (!activeKey || !urlHasFiltersParam) return
+    if (!urlSelectionId || !active?.id) return
+    const sel = selections.find((s) => s.id === urlSelectionId)
+    if (!sel) {
+      setTabs((prev) =>
+        prev.filter((t) => t.key !== selectionTabKey(urlSelectionId)),
+      )
+      navigate('/', { replace: true })
+      return
+    }
+    setTabs((prev) => {
+      const key = selectionTabKey(sel.id)
+      const exists = prev.find((t) => t.key === key)
+      if (!exists) return [...prev, makeSelectionTab(sel)]
+      if (exists.selectionName !== sel.name) {
+        return prev.map((t) =>
+          t.key === key ? { ...t, selectionName: sel.name } : t,
+        )
+      }
+      return prev
+    })
+  }, [urlSelectionId, active?.id, selections, navigate])
+
+  // URL `f` → active tab filters (object routes only, when the param is present).
+  useEffect(() => {
+    if (!activeKey || !urlHasFiltersParam || isSelectionRoute) return
+    if (activeTab?.selectionId) return
     const parsed = parseFiltersParam(filtersSearchRaw)
     setTabs((prev) =>
       prev.map((t) => {
@@ -174,11 +225,19 @@ export default function Explorer() {
         return { ...t, filters: parsed, offset: 0 }
       }),
     )
-  }, [activeKey, urlHasFiltersParam, filtersSearchRaw])
+  }, [
+    activeKey,
+    activeTab?.selectionId,
+    urlHasFiltersParam,
+    filtersSearchRaw,
+    isSelectionRoute,
+  ])
 
-  // Active tab filters → URL (keeps shareable links + session restore in sync).
+  // Active tab filters → URL (object browse only; selection tabs keep /s/:id).
   useEffect(() => {
+    if (isSelectionRoute) return
     if (!urlObject || !activeTab || activeTab.key !== activeKey) return
+    if (activeTab.selectionId) return
     const desired = objectPathFrom(urlObject, { filters: activeTab.filters })
     const current = `${location.pathname}${location.search}`
     if (desired === current) return
@@ -186,16 +245,40 @@ export default function Explorer() {
   }, [
     activeKey,
     activeTab,
+    isSelectionRoute,
     location.pathname,
     location.search,
     navigate,
     urlObject,
   ])
 
+  const selected = activeTab?.object ?? urlObject
+  const filters = activeTab?.filters ?? []
+  const sort = activeTab?.sort ?? null
+  const limit = activeTab?.limit ?? getDefaultPageSize(BROWSE_PAGE_SIZE_MAX)
+  const offset = activeTab?.offset ?? 0
+  const hiddenColumns = activeTab?.hiddenColumns ?? []
+  const columnOrder = activeTab?.columnOrder ?? []
+  const columnWidths = activeTab?.columnWidths ?? {}
+  const linkedSelectionId = activeTab?.selectionId ?? urlSelectionId
+  const selectionDirty = Boolean(activeTab?.selectionId && activeTab.dirty)
+  const selectionName = activeTab?.selectionName
+
   const updateActiveTab = (patch: Partial<OpenTab>) => {
     if (!activeKey) return
     setTabs((prev) =>
-      prev.map((t) => (t.key === activeKey ? { ...t, ...patch } : t)),
+      prev.map((t) => {
+        if (t.key !== activeKey) return t
+        const next: OpenTab = { ...t, ...patch }
+        if (
+          t.selectionId &&
+          patch.dirty === undefined &&
+          SELECTION_DIRTY_KEYS.some((k) => k in patch)
+        ) {
+          next.dirty = true
+        }
+        return next
+      }),
     )
   }
 
@@ -217,42 +300,65 @@ export default function Explorer() {
       const next = prev.filter((t) => t.key !== key)
       if (key === activeKey) {
         const fallback = next[idx] ?? next[idx - 1] ?? null
-        navigate(
-          fallback
-            ? objectPathFrom(fallback.object, { filters: fallback.filters })
-            : '/',
-          { replace: true },
-        )
+        navigate(fallback ? tabPath(fallback) : '/', { replace: true })
       }
       return next
     })
   }
 
   const openSelection = (sel: SavedSelection) => {
-    const key = objectKeyFrom(sel.object)
-    const tab: OpenTab = {
-      key,
-      object: sel.object,
-      filters: sel.filters,
-      sort: sel.sort,
-      limit: sel.limit,
-      offset: 0,
-      hiddenColumns: sel.hiddenColumns,
-      columnOrder: sel.columnOrder,
-      columnWidths: sel.columnWidths ?? {},
-      scrollTop: 0,
-      scrollLeft: 0,
-    }
+    const tab = makeSelectionTab(sel)
     setTabs((prev) => {
-      const exists = prev.some((t) => t.key === key)
-      if (exists) return prev.map((t) => (t.key === key ? tab : t))
+      const exists = prev.some((t) => t.key === tab.key)
+      if (exists) {
+        return prev.map((t) =>
+          t.key === tab.key
+            ? {
+                ...tab,
+                // Keep session dirty edits if re-opening the same selection tab.
+                ...(t.dirty
+                  ? {
+                      filters: t.filters,
+                      sort: t.sort,
+                      limit: t.limit,
+                      offset: t.offset,
+                      hiddenColumns: t.hiddenColumns,
+                      columnOrder: t.columnOrder,
+                      columnWidths: t.columnWidths,
+                      scrollTop: t.scrollTop,
+                      scrollLeft: t.scrollLeft,
+                      dirty: t.dirty,
+                      selectionName: sel.name,
+                    }
+                  : { selectionName: sel.name }),
+              }
+            : t,
+        )
+      }
       return [...prev, tab]
     })
-    navigate(objectPathFrom(sel.object, { filters: sel.filters }))
+    navigate(selectionPath(sel.id))
   }
 
   const saveCurrentSelection = async () => {
-    if (!selected) return
+    if (!selected || !activeKey) return
+
+    if (activeTab?.selectionId) {
+      if (!activeTab.dirty) return
+      updateSelection(activeTab.selectionId, {
+        name: activeTab.selectionName ?? undefined,
+        object: selected,
+        filters,
+        sort,
+        hiddenColumns,
+        columnOrder,
+        columnWidths,
+        limit,
+      })
+      updateActiveTab({ dirty: false })
+      return
+    }
+
     const suggested = defaultSelectionName(selected, filters, sort)
     const name = await dialog.prompt({
       title: 'Save selection',
@@ -261,7 +367,7 @@ export default function Explorer() {
       confirmLabel: 'Save',
     })
     if (name === null) return
-    addSelection({
+    const created = addSelection({
       name: name.trim() || suggested,
       object: selected,
       filters,
@@ -271,6 +377,37 @@ export default function Explorer() {
       columnWidths,
       limit,
     })
+    if (!created) return
+    const newKey = selectionTabKey(created.id)
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.key === activeKey
+          ? {
+              ...t,
+              key: newKey,
+              selectionId: created.id,
+              selectionName: created.name,
+              dirty: false,
+            }
+          : t,
+      ),
+    )
+    navigate(selectionPath(created.id))
+  }
+
+  const onRenameActiveSelection = async () => {
+    if (!activeTab?.selectionId) return
+    const current = activeTab.selectionName ?? ''
+    const name = await dialog.prompt({
+      title: 'Rename selection',
+      defaultValue: current,
+      confirmLabel: 'Rename',
+    })
+    if (name === null) return
+    const trimmed = name.trim()
+    if (!trimmed) return
+    renameSelection(activeTab.selectionId, trimmed)
+    updateActiveTab({ selectionName: trimmed })
   }
 
   const newTransform = () => {
@@ -297,15 +434,6 @@ export default function Explorer() {
     else panel.collapse()
     syncObjectsCollapsed()
   }
-
-  const selected = activeTab?.object ?? urlObject
-  const filters = activeTab?.filters ?? []
-  const sort = activeTab?.sort ?? null
-  const limit = activeTab?.limit ?? getDefaultPageSize(BROWSE_PAGE_SIZE_MAX)
-  const offset = activeTab?.offset ?? 0
-  const hiddenColumns = activeTab?.hiddenColumns ?? []
-  const columnOrder = activeTab?.columnOrder ?? []
-  const columnWidths = activeTab?.columnWidths ?? {}
 
   useEffect(() => {
     setColumnsOpen(false)
@@ -457,6 +585,13 @@ export default function Explorer() {
   const selectedIsFavorite = selectedFavorite
     ? isFavorite(selectedFavorite)
     : false
+  const isLinkedSelection = Boolean(linkedSelectionId && selectionName)
+  const bookmarkTitle = isLinkedSelection
+    ? selectionDirty
+      ? 'Update saved selection'
+      : 'Selection saved'
+    : 'Save selection view'
+  const bookmarkDisabled = isLinkedSelection && !selectionDirty
 
   return (
     <Group orientation="horizontal" style={{ height: '100%', width: '100%' }}>
@@ -473,6 +608,7 @@ export default function Explorer() {
           connection={active}
           mode="browse"
           selected={selected}
+          activeSelectionId={linkedSelectionId}
           onOpenSelection={openSelection}
           onOpenTransformation={openTransformation}
           onCollapse={toggleObjectsPanel}
@@ -494,8 +630,22 @@ export default function Explorer() {
               </button>
             ) : null}
             <span className="panel-title">Data</span>
+            {isLinkedSelection ? (
+              <button
+                type="button"
+                className="sel-name-btn"
+                onDoubleClick={() => void onRenameActiveSelection()}
+                title={`${objectTitle(selected!)}\nDouble-click to rename`}
+              >
+                {selectionName}
+                {selectionDirty ? ' •' : ''}
+              </button>
+            ) : null}
             {selected ? (
-              <span className="data-fqn" title={objectTitle(selected)}>
+              <span
+                className={`data-fqn${isLinkedSelection ? ' data-fqn-secondary' : ''}`}
+                title={objectTitle(selected)}
+              >
                 {objectTitle(selected)}
               </span>
             ) : null}
@@ -516,6 +666,9 @@ export default function Explorer() {
             ) : null}
             {selected ? (
               <span className="kind-badge">{selected.kind}</span>
+            ) : null}
+            {isLinkedSelection ? (
+              <span className="kind-badge">selection</span>
             ) : null}
             {visibleFilters.length > 0 ? (
               <div
@@ -572,12 +725,21 @@ export default function Explorer() {
               {selected ? (
                 <button
                   type="button"
-                  className="btn-micro btn-icon"
-                  onClick={saveCurrentSelection}
-                  title="Save selection view"
-                  aria-label="Save selection view"
+                  className={`btn-micro btn-icon${
+                    isLinkedSelection
+                      ? selectionDirty
+                        ? ' open'
+                        : ''
+                      : ''
+                  }`}
+                  onClick={() => void saveCurrentSelection()}
+                  disabled={bookmarkDisabled}
+                  title={bookmarkTitle}
+                  aria-label={bookmarkTitle}
                 >
-                  <BookmarkIcon />
+                  <BookmarkIcon
+                    filled={isLinkedSelection && !selectionDirty}
+                  />
                 </button>
               ) : null}
               {preview.data && selected ? (

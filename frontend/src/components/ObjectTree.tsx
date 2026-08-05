@@ -52,6 +52,7 @@ import {
 type Props = {
   connection: Connection
   selected: SelectedObject | null
+  activeSelectionId?: string | null
   onOpenSelection: (selection: SavedSelection) => void
   activeTransformId?: string | null
   onOpenTransformation?: (id: string) => void
@@ -127,12 +128,18 @@ function useCollapseOnFold(
 export default function ObjectTree({
   connection,
   selected,
+  activeSelectionId = null,
   onOpenSelection,
   activeTransformId = null,
   onOpenTransformation,
 }: Props) {
   const { favorites, isFavorite, toggle, replace } = useFavorites()
-  const { selections, remove: removeSelection } = useSelections()
+  const dialog = useDialog()
+  const {
+    selections,
+    remove: removeSelection,
+    rename: renameSelection,
+  } = useSelections()
   const {
     transformations,
     remove: removeTransformation,
@@ -244,9 +251,20 @@ export default function ObjectTree({
         >
           <SelectionsList
             selections={selections}
-            selected={selected}
+            activeSelectionId={activeSelectionId}
             onOpen={onOpenSelection}
             onRemove={removeSelection}
+            onRename={async (sel) => {
+              const name = await dialog.prompt({
+                title: 'Rename selection',
+                defaultValue: sel.name,
+                confirmLabel: 'Rename',
+              })
+              if (name === null) return
+              const trimmed = name.trim()
+              if (!trimmed) return
+              renameSelection(sel.id, trimmed)
+            }}
           />
         </TreeSection>
       ) : null}
@@ -413,22 +431,21 @@ function FavoritesSection({
 
 function SelectionsList({
   selections,
-  selected,
+  activeSelectionId,
   onOpen,
   onRemove,
+  onRename,
 }: {
   selections: SavedSelection[]
-  selected: SelectedObject | null
+  activeSelectionId: string | null
   onOpen: (selection: SavedSelection) => void
   onRemove: (id: string) => void
+  onRename: (selection: SavedSelection) => void | Promise<void>
 }) {
   return (
     <>
       {selections.map((sel) => {
-        const active =
-          selected?.database === sel.object.database &&
-          selected?.schema === sel.object.schema &&
-          selected?.name === sel.object.name
+        const active = activeSelectionId === sel.id
         const filters = selectionFilterCount(sel)
         const title = `${sel.object.database}.${sel.object.schema}.${sel.object.name}`
         return (
@@ -444,7 +461,15 @@ function SelectionsList({
             <span className="tree-icon-slot">
               <BookmarkIcon filled />
             </span>
-            <span className="tree-label" title={title}>
+            <span
+              className="tree-label"
+              title={`${title}\nDouble-click to rename`}
+              onDoubleClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                void onRename(sel)
+              }}
+            >
               {sel.name}
             </span>
             {filters > 0 ? (

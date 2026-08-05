@@ -202,6 +202,8 @@ export type ColumnFilter = {
   values: FilterValue[]
   /** Defaults to `in` when omitted (legacy saved filters). */
   op?: FilterOp
+  /** When true, kept in the recipe but skipped at run time. */
+  disabled?: boolean
 }
 
 /** Map stray null labels (e.g. Python `str(None)`) back to JSON null. */
@@ -256,7 +258,8 @@ export function parseFilterNumber(value: FilterValue | undefined): number | null
   return Number.isFinite(n) ? n : null
 }
 
-export function filterIsActive(filter: ColumnFilter): boolean {
+/** Whether the filter defines a runnable condition (ignores `disabled`). */
+export function filterHasCondition(filter: ColumnFilter): boolean {
   const op = normalizeFilterOp(filter.op)
   if (op === 'in') return filter.values.length > 0
   if (
@@ -278,6 +281,12 @@ export function filterIsActive(filter: ColumnFilter): boolean {
     )
   }
   return filter.values.some((v) => v != null && String(v).length > 0)
+}
+
+/** Active for query/run: has a condition and is not disabled. */
+export function filterIsActive(filter: ColumnFilter): boolean {
+  if (filter.disabled) return false
+  return filterHasCondition(filter)
 }
 
 /** Short chip / badge text for a filter. */

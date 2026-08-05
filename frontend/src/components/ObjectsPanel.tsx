@@ -14,6 +14,7 @@ type Props = {
   /** Which workspace is showing this panel (drives the Browse/Transform nav). */
   mode: 'browse' | 'transform'
   selected: SelectedObject | null
+  activeSelectionId?: string | null
   onOpenSelection: (selection: SavedSelection) => void
   onOpenTransformation: (id: string) => void
   activeTransformId?: string | null
@@ -26,6 +27,7 @@ export default function ObjectsPanel({
   connection,
   mode,
   selected,
+  activeSelectionId = null,
   onOpenSelection,
   onOpenTransformation,
   activeTransformId = null,
@@ -115,6 +117,7 @@ export default function ObjectsPanel({
           <ObjectTree
             connection={connection}
             selected={selected}
+            activeSelectionId={activeSelectionId}
             onOpenSelection={onOpenSelection}
             activeTransformId={activeTransformId}
             onOpenTransformation={onOpenTransformation}

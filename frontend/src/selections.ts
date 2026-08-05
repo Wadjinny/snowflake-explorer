@@ -202,3 +202,8 @@ export function makeSelection(input: {
 export function selectionFilterCount(sel: SavedSelection): number {
   return sel.filters.filter(filterIsActive).length
 }
+
+/** Browse URL for a saved selection: /s/:selectionId */
+export function selectionPath(selectionId: string): string {
+  return `/s/${encodeURIComponent(selectionId)}`
+}

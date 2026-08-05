@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SnowflakeConnection(BaseModel):
@@ -86,6 +86,8 @@ class ColumnFilter(BaseModel):
     type: FacetableType
     values: list[Any] = Field(default_factory=list)
     op: FilterOp = "in"
+    # Kept in the recipe but skipped when compiling WHERE / HAVING.
+    disabled: bool = False
 
 
 class SortSpec(BaseModel):
@@ -206,8 +208,20 @@ class TransformRecipe(BaseModel):
     columns: list[RecipeColumn] = Field(default_factory=list)
     groupBy: list[str] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
+    # Post-aggregate filters (SQL HAVING) on group-by / metric aliases.
+    havingFilters: list[ColumnFilter] = Field(default_factory=list)
     pivot: PivotSpec | None = None
-    sort: SortSpec | None = None
+    # Multi-column ORDER BY; legacy single SortSpec objects are coerced.
+    sort: list[SortSpec] = Field(default_factory=list)
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def _coerce_sort(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [value]
+        return value
 
 
 class TransformRequest(BaseModel):

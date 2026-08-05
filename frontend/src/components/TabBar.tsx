@@ -1,7 +1,7 @@
 import { Link } from 'react-router'
-import { objectPathFrom, objectTitle, shortObjectLabel } from '../paths'
-import type { OpenTab } from '../openTabs'
-import { TableIcon, ViewIcon } from './TreeIcons'
+import { objectTitle, shortObjectLabel } from '../paths'
+import { tabPath, type OpenTab } from '../openTabs'
+import { BookmarkIcon, TableIcon, ViewIcon } from './TreeIcons'
 
 type Props = {
   tabs: OpenTab[]
@@ -16,6 +16,13 @@ export default function TabBar({ tabs, activeKey, onClose }: Props) {
     <div className="tab-bar" role="tablist" aria-label="Open objects">
       {tabs.map((tab) => {
         const active = tab.key === activeKey
+        const isSelection = Boolean(tab.selectionId)
+        const label = isSelection
+          ? (tab.selectionName ?? shortObjectLabel(tab.object))
+          : shortObjectLabel(tab.object)
+        const title = isSelection
+          ? `${label}${tab.dirty ? ' (unsaved)' : ''}\n${objectTitle(tab.object)}`
+          : objectTitle(tab.object)
         return (
           <div
             key={tab.key}
@@ -23,21 +30,26 @@ export default function TabBar({ tabs, activeKey, onClose }: Props) {
             role="tab"
             aria-selected={active}
           >
-            <Link
-              to={objectPathFrom(tab.object, { filters: tab.filters })}
-              className="tab-link"
-              title={objectTitle(tab.object)}
-            >
+            <Link to={tabPath(tab)} className="tab-link" title={title}>
               <span className="tab-icon">
-                {tab.object.kind === 'view' ? <ViewIcon /> : <TableIcon />}
+                {isSelection ? (
+                  <BookmarkIcon filled />
+                ) : tab.object.kind === 'view' ? (
+                  <ViewIcon />
+                ) : (
+                  <TableIcon />
+                )}
               </span>
-              <span className="tab-label">{shortObjectLabel(tab.object)}</span>
+              <span className="tab-label">
+                {label}
+                {isSelection && tab.dirty ? ' •' : ''}
+              </span>
             </Link>
             <button
               type="button"
               className="tab-close"
               title="Close tab"
-              aria-label={`Close ${tab.object.name}`}
+              aria-label={`Close ${label}`}
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()

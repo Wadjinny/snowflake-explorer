@@ -1257,9 +1257,34 @@ a.tree-row:hover {
   text-decoration: none;
 }
 
+.data-fqn-secondary {
+  opacity: 0.75;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
 a.data-fqn:hover {
   text-decoration: underline;
   color: var(--data-bright);
+}
+
+.sel-name-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.sel-name-btn:hover {
+  color: #fff;
 }
 
 .data-filter-info {
@@ -3003,6 +3028,15 @@ body.facet-resizing * {
   align-items: flex-start;
 }
 
+.tf-filter-row.disabled {
+  opacity: 0.55;
+}
+
+.tf-filter-row .tf-filter-disable {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
 .tf-agg-row,
 .tf-order-row {
   flex-direction: row;
@@ -3041,6 +3075,7 @@ body.facet-resizing * {
 
 .tf-order-row {
   flex-wrap: nowrap;
+  align-items: center;
 }
 
 .tf-field-grow {

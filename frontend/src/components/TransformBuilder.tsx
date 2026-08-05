@@ -6,7 +6,11 @@ import type {
   FacetableType,
   SortDirection,
 } from '../types'
-import { isFacetable, filterChipLabels, filterIsActive } from '../types'
+import {
+  filterChipLabels,
+  filterHasCondition,
+  isFacetable,
+} from '../types'
 import { objectTitle } from '../paths'
 import {
   MAX_JOINS,
@@ -71,6 +75,7 @@ const STEP_LABELS: Record<StepId, string> = {
   columns: 'Columns',
   filters: 'Filter',
   aggregate: 'Aggregate',
+  having: 'Having',
   pivot: 'Pivot',
   order: 'Order',
 }
@@ -80,6 +85,7 @@ const ALL_STEPS: StepId[] = [
   'columns',
   'filters',
   'aggregate',
+  'having',
   'pivot',
   'order',
 ]
@@ -92,9 +98,66 @@ function stepsFromRecipe(recipe: TransformRecipe): Set<StepId> {
   if (recipe.groupBy.length > 0 || recipe.aggregations.length > 0) {
     s.add('aggregate')
   }
+  if ((recipe.havingFilters ?? []).length > 0) s.add('having')
   if (recipe.pivot) s.add('pivot')
-  if (recipe.sort) s.add('order')
+  if (recipe.sort.length > 0) s.add('order')
   return s
+}
+
+type HavingColumn = { name: string; type: FacetableType }
+
+/** Output columns available for HAVING (group-by names + metric aliases). */
+function havingColumnOptions(
+  recipe: TransformRecipe,
+  columns: ColumnInfo[],
+): HavingColumn[] {
+  if (recipe.aggregations.length === 0 && recipe.groupBy.length === 0) {
+    return []
+  }
+  const out: HavingColumn[] = []
+  const seen = new Set<string>()
+  for (const ref of recipe.groupBy) {
+    const bare = parseColumnRef(ref, recipe.sourceAlias).column
+    if (seen.has(bare)) continue
+    seen.add(bare)
+    const probe =
+      columns.find((c) => c.name === ref) ??
+      columns.find(
+        (c) =>
+          parseColumnRef(c.name, recipe.sourceAlias).column === bare,
+      )
+    const type: FacetableType =
+      probe && isFacetable(probe.type) ? probe.type : 'string'
+    out.push({ name: bare, type })
+  }
+  for (const agg of recipe.aggregations) {
+    const alias = agg.alias.trim()
+    if (!alias || seen.has(alias)) continue
+    seen.add(alias)
+    let type: FacetableType = 'number'
+    if ((agg.fn === 'min' || agg.fn === 'max') && agg.column) {
+      const probe = columns.find((c) => c.name === agg.column)
+      if (probe && isFacetable(probe.type)) type = probe.type
+    }
+    out.push({ name: alias, type })
+  }
+  return out
+}
+
+/** Resolve a HAVING column to a physical facet target when it is a group-by. */
+function havingFacetTarget(
+  column: string,
+  type: FacetableType,
+  recipe: TransformRecipe,
+  probeColumns: ColumnInfo[],
+): ReturnType<typeof facetTargetFromRecipe> {
+  for (const ref of recipe.groupBy) {
+    const bare = parseColumnRef(ref, recipe.sourceAlias).column
+    if (bare === column || ref === column) {
+      return facetTargetFromRecipe(ref, type, recipe, probeColumns)
+    }
+  }
+  return null
 }
 
 /** Output column names suitable for ORDER BY on the compiled query. */
@@ -157,6 +220,7 @@ export default function TransformBuilder({
   const [groupByView, setGroupByView] = useState<'all' | 'selected' | 'hidden'>(
     'all',
   )
+  const [groupBySearch, setGroupBySearch] = useState('')
   const [collapsedSteps, setCollapsedSteps] = useState<Set<ShellId>>(
     () => new Set(),
   )
@@ -268,14 +332,37 @@ export default function TransformBuilder({
   const hiddenCount = hasColumnSelection
     ? columns.length - recipe.columns.length
     : 0
-  const isVisibleInColumns = (name: string) =>
-    !hasColumnSelection || selectedRefs.has(name)
+  const groupBySet = new Set(recipe.groupBy)
+  const groupBySelectedCount = recipe.groupBy.length
+  const groupByHiddenCount = columns.length - groupBySelectedCount
+  const groupBySearchQ = groupBySearch.trim().toLowerCase()
   const visibleGroupByColumns = columns.filter((c) => {
-    const inCols = isVisibleInColumns(c.name)
-    if (groupByView === 'selected') return inCols
-    if (groupByView === 'hidden') return !inCols
-    return true
+    const grouped = groupBySet.has(c.name)
+    if (groupByView === 'selected' && !grouped) return false
+    if (groupByView === 'hidden' && grouped) return false
+    if (!groupBySearchQ) return true
+    const { column: bare } = parseColumnRef(c.name, recipe.sourceAlias)
+    return (
+      bare.toLowerCase().includes(groupBySearchQ) ||
+      c.name.toLowerCase().includes(groupBySearchQ)
+    )
   })
+
+  const selectAllGroupBy = () => {
+    patch({ groupBy: columns.map((c) => c.name) })
+  }
+
+  const selectNoGroupBy = () => {
+    patch({ groupBy: [] })
+  }
+
+  const toggleGroupBy = (ref: string) => {
+    if (groupBySet.has(ref)) {
+      patch({ groupBy: recipe.groupBy.filter((g) => g !== ref) })
+    } else {
+      patch({ groupBy: [...recipe.groupBy, ref] })
+    }
+  }
 
   const selectAllColumns = () => {
     setColumnsSelectMode(false)
@@ -383,6 +470,25 @@ export default function TransformBuilder({
     openStep('filters')
   }
 
+  const addHavingFilter = () => {
+    const opts = havingColumnOptions(recipe, columns)
+    const first = opts[0]
+    if (!first) {
+      openStep('having')
+      return
+    }
+    const f: ColumnFilter = {
+      column: first.name,
+      type: first.type,
+      values: [],
+      op: first.type === 'number' ? 'gt' : 'in',
+    }
+    patch({
+      havingFilters: [...(recipe.havingFilters ?? []), f],
+    })
+    openStep('having')
+  }
+
   const enablePivot = () => {
     patch({
       pivot: {
@@ -398,10 +504,12 @@ export default function TransformBuilder({
   const enableOrder = () => {
     const opts = orderColumnOptions(recipe, columns)
     patch({
-      sort: {
-        column: opts[0] ?? '',
-        direction: 'asc',
-      },
+      sort: [
+        {
+          column: opts[0] ?? '',
+          direction: 'asc',
+        },
+      ],
     })
     openStep('order')
   }
@@ -420,13 +528,23 @@ export default function TransformBuilder({
         patch(clearDisabled(id, { filters: [] }))
         break
       case 'aggregate':
-        patch(clearDisabled(id, { groupBy: [], aggregations: [] }))
+        patch(
+          clearDisabled(id, {
+            groupBy: [],
+            aggregations: [],
+            havingFilters: [],
+          }),
+        )
+        closeStep('having')
+        break
+      case 'having':
+        patch(clearDisabled(id, { havingFilters: [] }))
         break
       case 'pivot':
         patch(clearDisabled(id, { pivot: null }))
         break
       case 'order':
-        patch(clearDisabled(id, { sort: null }))
+        patch(clearDisabled(id, { sort: [] }))
         break
     }
   }
@@ -445,6 +563,9 @@ export default function TransformBuilder({
         break
       case 'aggregate':
         addAgg()
+        break
+      case 'having':
+        addHavingFilter()
         break
       case 'pivot':
         enablePivot()
@@ -469,7 +590,14 @@ export default function TransformBuilder({
     const col = columns.find((c) => c.name === name)
     return { name, type: col?.type }
   })
-  const availableSteps = ALL_STEPS.filter((id) => !active.has(id))
+  const availableSteps = ALL_STEPS.filter((id) => {
+    if (active.has(id)) return false
+    // Having only makes sense once Aggregate is present.
+    if (id === 'having' && !active.has('aggregate')) return false
+    return true
+  })
+  const havingColumns = havingColumnOptions(recipe, columns)
+  const havingFilters = recipe.havingFilters ?? []
   const visibleShellIds: ShellId[] = [
     'source',
     ...ALL_STEPS.filter((id) => active.has(id)),
@@ -816,15 +944,37 @@ export default function TransformBuilder({
                   view={groupByView}
                   onChange={setGroupByView}
                   allCount={columns.length}
-                  selectedCount={selectedCount}
-                  hiddenCount={hiddenCount}
+                  selectedCount={groupBySelectedCount}
+                  hiddenCount={groupByHiddenCount}
                   labels={{
                     all: 'All',
-                    selected: 'Visible in Columns',
-                    hidden: 'Hidden in Columns',
+                    selected: 'Grouped',
+                    hidden: 'Ungrouped',
                   }}
                 />
               </div>
+              <button
+                type="button"
+                className="btn-micro btn-icon"
+                onClick={selectAllGroupBy}
+                title="Group by all columns"
+                aria-label="Group by all columns"
+                disabled={
+                  columns.length === 0 ||
+                  groupBySelectedCount === columns.length
+                }
+              >
+                <CheckIcon />
+              </button>
+              <button
+                type="button"
+                className="btn-micro"
+                onClick={selectNoGroupBy}
+                title="Clear group by"
+                disabled={groupBySelectedCount === 0}
+              >
+                None
+              </button>
               <button type="button" className="btn-micro" onClick={addAgg}>
                 Add metric
               </button>
@@ -835,49 +985,54 @@ export default function TransformBuilder({
         >
           <div className="tf-block">
             <div className="tf-block-label">Group by</div>
-            <div className="tf-list tf-list-sm">
+            <input
+              className="input tf-search"
+              type="search"
+              placeholder="Find column…"
+              value={groupBySearch}
+              onChange={(e) => setGroupBySearch(e.target.value)}
+              aria-label="Find group-by column"
+            />
+            <div className="tf-list">
               {visibleGroupByColumns.length === 0 ? (
                 <div className="tf-empty tf-list-empty">
-                  {groupByView === 'selected'
-                    ? 'No columns visible in Columns'
-                    : groupByView === 'hidden'
-                      ? 'No columns hidden in Columns'
-                      : 'No columns'}
+                  {groupBySearchQ
+                    ? 'No matching columns'
+                    : groupByView === 'selected'
+                      ? 'No grouped columns'
+                      : groupByView === 'hidden'
+                        ? 'No ungrouped columns'
+                        : 'No columns'}
                 </div>
               ) : (
                 visibleGroupByColumns.map((c) => {
-                  const on = recipe.groupBy.includes(c.name)
-                  const fromColumns = isVisibleInColumns(c.name)
+                  const on = groupBySet.has(c.name)
+                  const { alias, column: bare } = parseColumnRef(
+                    c.name,
+                    recipe.sourceAlias,
+                  )
                   return (
-                    <label
+                    <div
                       key={c.name}
-                      className={`tf-list-row${on ? ' on' : ''}${fromColumns && hasColumnSelection ? ' from-cols' : ''}`}
-                      title={
-                        fromColumns && hasColumnSelection
-                          ? `${c.name} — visible in Columns`
-                          : c.name
-                      }
+                      className={`tf-list-row tf-col-row${on ? ' on' : ''}${!on ? ' off' : ''}`}
+                      onMouseEnter={() => onHoverColumn?.(c.name)}
+                      onMouseLeave={() => onHoverColumn?.(null)}
                     >
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => {
-                          if (on) {
-                            patch({
-                              groupBy: recipe.groupBy.filter(
-                                (g) => g !== c.name,
-                              ),
-                            })
-                          } else {
-                            patch({ groupBy: [...recipe.groupBy, c.name] })
-                          }
-                        }}
-                      />
-                      <span className="tf-mono tf-col-name" title={c.name}>
-                        {c.name}
-                      </span>
-                      <span className={`th-type type-${c.type}`}>{c.type}</span>
-                    </label>
+                      <label className="tf-col-check-main">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => toggleGroupBy(c.name)}
+                        />
+                        <span className="kind-badge">{alias}</span>
+                        <span className="tf-mono tf-col-name" title={c.name}>
+                          {bare}
+                        </span>
+                        <span className={`th-type type-${c.type}`}>
+                          {c.type}
+                        </span>
+                      </label>
+                    </div>
                   )
                 })
               )}
@@ -955,6 +1110,72 @@ export default function TransformBuilder({
                     <CloseIcon />
                   </button>
                 </div>
+              ))}
+            </div>
+          )}
+        </StepShell>
+      ) : null}
+
+      {active.has('having') ? (
+        <StepShell
+          title="Having"
+          {...stepShellProps('having')}
+          meta={
+            havingFilters.length > 0 ? (
+              <span className="tf-step-meta">{havingFilters.length}</span>
+            ) : null
+          }
+          actions={
+            <button
+              type="button"
+              className="btn-micro"
+              onClick={addHavingFilter}
+              disabled={havingColumns.length === 0}
+            >
+              Add
+            </button>
+          }
+          onRemove={() => removeStep('having')}
+          removeTitle="Remove having"
+        >
+          {havingColumns.length === 0 ? (
+            <div className="tf-empty">
+              Add Aggregate group-by or metrics first
+            </div>
+          ) : havingFilters.length === 0 ? (
+            <div className="tf-empty">No post-aggregate filters yet</div>
+          ) : (
+            <div className="tf-stack">
+              {havingFilters.map((f, i) => (
+                <HavingFilterEditor
+                  key={i}
+                  filter={f}
+                  columns={havingColumns}
+                  connection={connection}
+                  recipe={recipe}
+                  probeColumns={columns}
+                  allFilters={havingFilters}
+                  onChange={(next) => {
+                    if (Array.isArray(next)) {
+                      const column = f.column
+                      patch({
+                        havingFilters: [
+                          ...havingFilters.filter((x) => x.column !== column),
+                          ...next,
+                        ],
+                      })
+                      return
+                    }
+                    const filters = [...havingFilters]
+                    filters[i] = next
+                    patch({ havingFilters: filters })
+                  }}
+                  onRemove={() =>
+                    patch({
+                      havingFilters: havingFilters.filter((_, j) => j !== i),
+                    })
+                  }
+                />
               ))}
             </div>
           )}
@@ -1076,55 +1297,91 @@ export default function TransformBuilder({
         <StepShell
           title="Order"
           {...stepShellProps('order')}
+          meta={
+            recipe.sort.length > 0 ? (
+              <span className="tf-step-meta">{recipe.sort.length}</span>
+            ) : null
+          }
+          actions={
+            <button
+              type="button"
+              className="btn-micro"
+              onClick={() => {
+                const used = new Set(recipe.sort.map((s) => s.column))
+                const nextCol =
+                  sortOptions.find((c) => !used.has(c)) ??
+                  sortOptions[0] ??
+                  ''
+                patch({
+                  sort: [
+                    ...recipe.sort,
+                    { column: nextCol, direction: 'asc' },
+                  ],
+                })
+              }}
+              disabled={sortOptions.length === 0}
+            >
+              Add
+            </button>
+          }
           onRemove={() => removeStep('order')}
           removeTitle="Remove order"
         >
           {sortOptions.length === 0 ? (
             <div className="tf-empty">No columns to order by</div>
+          ) : recipe.sort.length === 0 ? (
+            <div className="tf-empty">No sort columns yet</div>
           ) : (
-            <div className="tf-order-row">
-              <label className="tf-field tf-field-grow">
-                <span className="tf-label">Column</span>
-                <ColumnSelect
-                  columns={sortColumnInfos}
-                  value={
-                    recipe.sort && sortOptions.includes(recipe.sort.column)
-                      ? recipe.sort.column
-                      : (sortOptions[0] ?? '')
-                  }
-                  aria-label="Order by column"
-                  onChange={(name) =>
-                    patch({
-                      sort: {
-                        column: name,
-                        direction: recipe.sort?.direction ?? 'asc',
-                      },
-                    })
-                  }
-                />
-              </label>
-              <label className="tf-field">
-                <span className="tf-label">Dir</span>
-                <select
-                  className="select"
-                  value={recipe.sort?.direction ?? 'asc'}
-                  onChange={(e) =>
-                    patch({
-                      sort: {
-                        column:
-                          recipe.sort?.column &&
-                          sortOptions.includes(recipe.sort.column)
-                            ? recipe.sort.column
-                            : (sortOptions[0] ?? ''),
+            <div className="tf-stack">
+              {recipe.sort.map((s, i) => (
+                <div key={i} className="tf-item tf-order-row">
+                  <div className="tf-field-grow">
+                    <ColumnSelect
+                      columns={sortColumnInfos}
+                      value={
+                        sortOptions.includes(s.column)
+                          ? s.column
+                          : (sortOptions[0] ?? '')
+                      }
+                      aria-label={`Order by column ${i + 1}`}
+                      onChange={(name) => {
+                        const sort = [...recipe.sort]
+                        sort[i] = { ...sort[i], column: name }
+                        patch({ sort })
+                      }}
+                    />
+                  </div>
+                  <select
+                    className="select"
+                    value={s.direction}
+                    aria-label={`Sort direction ${i + 1}`}
+                    onChange={(e) => {
+                      const sort = [...recipe.sort]
+                      sort[i] = {
+                        ...sort[i],
                         direction: e.target.value as SortDirection,
-                      },
-                    })
-                  }
-                >
-                  <option value="asc">asc</option>
-                  <option value="desc">desc</option>
-                </select>
-              </label>
+                      }
+                      patch({ sort })
+                    }}
+                  >
+                    <option value="asc">asc</option>
+                    <option value="desc">desc</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="btn-micro btn-icon"
+                    onClick={() =>
+                      patch({
+                        sort: recipe.sort.filter((_, j) => j !== i),
+                      })
+                    }
+                    title="Remove sort column"
+                    aria-label="Remove sort column"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </StepShell>
@@ -1464,6 +1721,144 @@ function JoinEditor({
   )
 }
 
+function HavingFilterEditor({
+  filter,
+  columns,
+  connection,
+  recipe,
+  probeColumns,
+  allFilters,
+  onChange,
+  onRemove,
+}: {
+  filter: ColumnFilter
+  columns: HavingColumn[]
+  connection: Connection
+  recipe: TransformRecipe
+  probeColumns: ColumnInfo[]
+  allFilters: ColumnFilter[]
+  onChange: (f: ColumnFilter | ColumnFilter[]) => void
+  onRemove: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const editAnchorRef = useRef<HTMLDivElement>(null)
+  const target = havingFacetTarget(
+    filter.column,
+    filter.type,
+    recipe,
+    probeColumns,
+  )
+  const valuesEnabled = target != null
+  const tableFilters: ColumnFilter[] =
+    target == null ? [] : tableFiltersForTarget(recipe, target)
+
+  const chips = filterChipLabels(filter)
+  const hasCondition = filterHasCondition(filter)
+  const disabled = !!filter.disabled
+  const columnFilters = allFilters.filter((f) => f.column === filter.column)
+
+  return (
+    <div className={`tf-item tf-filter-row${disabled ? ' disabled' : ''}`}>
+      <button
+        type="button"
+        className={`btn-micro btn-icon tf-filter-disable${disabled ? ' active' : ''}`}
+        onClick={() => onChange({ ...filter, disabled: !disabled })}
+        title={disabled ? 'Enable filter' : 'Disable filter'}
+        aria-label={disabled ? 'Enable filter' : 'Disable filter'}
+        aria-pressed={disabled}
+      >
+        {disabled ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
+      <ColumnSelect
+        columns={columns}
+        value={filter.column}
+        aria-label="Having column"
+        onChange={(name) => {
+          const col = columns.find((c) => c.name === name)
+          if (!col) return
+          onChange({
+            column: col.name,
+            type: col.type,
+            values: [],
+            op: col.type === 'number' ? 'gt' : 'in',
+            disabled: filter.disabled,
+          })
+          setOpen(false)
+        }}
+      />
+
+      <div className="tf-filter-values">
+        {!hasCondition ? (
+          <span className="tf-muted">No condition</span>
+        ) : (
+          <div className="tf-filter-chips">
+            {chips.map((label) => (
+              <span key={label} className="tf-filter-chip">
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="tf-filter-edit-wrap" ref={editAnchorRef}>
+        <button
+          type="button"
+          className={`btn-micro btn-icon${open ? ' open' : ''}${hasCondition && !disabled ? ' active' : ''}`}
+          onClick={() => setOpen((v) => !v)}
+          title="Edit having filter"
+          aria-label="Edit having filter"
+          aria-expanded={open}
+        >
+          <FilterIcon />
+        </button>
+        {open ? (
+          <ColumnFilterPopover
+            connection={connection}
+            database={target?.object.database ?? recipe.source.database}
+            schema={target?.object.schema ?? recipe.source.schema}
+            table={target?.object.name ?? recipe.source.name}
+            column={target?.bareColumn ?? filter.column}
+            type={target?.type ?? filter.type}
+            appliedFilters={columnFilters.map((f) => ({
+              column: target?.bareColumn ?? filter.column,
+              type: f.type,
+              values: f.values,
+              op: f.op,
+            }))}
+            filters={tableFilters}
+            valuesEnabled={valuesEnabled}
+            anchorRef={editAnchorRef}
+            onApply={(next) => {
+              onChange(
+                next.map((f) => ({
+                  column: filter.column,
+                  type: filter.type,
+                  values: f.values,
+                  op: f.op ?? 'in',
+                  disabled: filter.disabled,
+                })),
+              )
+              setOpen(false)
+            }}
+            onClose={() => setOpen(false)}
+          />
+        ) : null}
+      </div>
+
+      <button
+        type="button"
+        className="btn-micro btn-icon"
+        onClick={onRemove}
+        title="Remove having filter"
+        aria-label="Remove having filter"
+      >
+        <CloseIcon />
+      </button>
+    </div>
+  )
+}
+
 function FilterEditor({
   filter,
   columns,
@@ -1493,11 +1888,22 @@ function FilterEditor({
     target == null ? [] : tableFiltersForTarget(recipe, target)
 
   const chips = filterChipLabels(filter)
-  const active = filterIsActive(filter)
+  const hasCondition = filterHasCondition(filter)
+  const disabled = !!filter.disabled
   const columnFilters = allFilters.filter((f) => f.column === filter.column)
 
   return (
-    <div className="tf-item tf-filter-row">
+    <div className={`tf-item tf-filter-row${disabled ? ' disabled' : ''}`}>
+      <button
+        type="button"
+        className={`btn-micro btn-icon tf-filter-disable${disabled ? ' active' : ''}`}
+        onClick={() => onChange({ ...filter, disabled: !disabled })}
+        title={disabled ? 'Enable filter' : 'Disable filter'}
+        aria-label={disabled ? 'Enable filter' : 'Disable filter'}
+        aria-pressed={disabled}
+      >
+        {disabled ? <EyeOffIcon /> : <EyeIcon />}
+      </button>
       <ColumnSelect
         columns={facetable}
         value={filter.column}
@@ -1510,13 +1916,14 @@ function FilterEditor({
             type: col.type,
             values: [],
             op: 'in',
+            disabled: filter.disabled,
           })
           setOpen(false)
         }}
       />
 
       <div className="tf-filter-values">
-        {!active ? (
+        {!hasCondition ? (
           <span className="tf-muted">No condition</span>
         ) : (
           <div className="tf-filter-chips">
@@ -1532,7 +1939,7 @@ function FilterEditor({
       <div className="tf-filter-edit-wrap" ref={editAnchorRef}>
         <button
           type="button"
-          className={`btn-micro btn-icon${open ? ' open' : ''}${active ? ' active' : ''}`}
+          className={`btn-micro btn-icon${open ? ' open' : ''}${hasCondition && !disabled ? ' active' : ''}`}
           onClick={() => setOpen((v) => !v)}
           disabled={!target}
           title="Edit filter"
@@ -1564,6 +1971,7 @@ function FilterEditor({
                   type: filter.type,
                   values: f.values,
                   op: f.op ?? 'in',
+                  disabled: filter.disabled,
                 })),
               )
               setOpen(false)

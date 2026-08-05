@@ -85,6 +85,7 @@ export type TransformStepId =
   | 'columns'
   | 'filters'
   | 'aggregate'
+  | 'having'
   | 'pivot'
   | 'order'
 
@@ -93,6 +94,7 @@ export const TRANSFORM_STEP_IDS: TransformStepId[] = [
   'columns',
   'filters',
   'aggregate',
+  'having',
   'pivot',
   'order',
 ]
@@ -106,8 +108,11 @@ export type TransformRecipe = {
   columns: RecipeColumn[]
   groupBy: string[]
   aggregations: Aggregation[]
+  /** Post-aggregate filters (SQL HAVING) on group-by / metric aliases. */
+  havingFilters: ColumnFilter[]
   pivot: PivotSpec | null
-  sort: SortSpec | null
+  /** Multi-column ORDER BY (empty = no order). */
+  sort: SortSpec[]
   /** Steps present in the builder but skipped when running. */
   disabledSteps: TransformStepId[]
 }
@@ -187,6 +192,7 @@ function isFilterOp(value: unknown): boolean {
 function isColumnFilter(value: unknown): value is ColumnFilter {
   if (!value || typeof value !== 'object') return false
   const f = value as Record<string, unknown>
+  const disabledOk = f.disabled === undefined || typeof f.disabled === 'boolean'
   return (
     typeof f.column === 'string' &&
     (f.type === 'string' ||
@@ -196,17 +202,34 @@ function isColumnFilter(value: unknown): value is ColumnFilter {
       f.type === 'timestamp') &&
     Array.isArray(f.values) &&
     f.values.every(isFilterValue) &&
-    isFilterOp(f.op)
+    isFilterOp(f.op) &&
+    disabledOk
   )
 }
 
-function isSortSpec(value: unknown): value is SortSpec | null {
-  if (value === null) return true
+function isSortEntry(value: unknown): value is SortSpec {
   if (!value || typeof value !== 'object') return false
   const s = value as Record<string, unknown>
   return (
     typeof s.column === 'string' &&
     (s.direction === 'asc' || s.direction === 'desc')
+  )
+}
+
+/** Accept legacy single SortSpec / null as well as SortSpec[]. */
+function normalizeSortList(value: unknown): SortSpec[] {
+  if (value == null) return []
+  if (Array.isArray(value)) return value.filter(isSortEntry)
+  if (isSortEntry(value)) return [value]
+  return []
+}
+
+function isSortList(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    isSortEntry(value) ||
+    (Array.isArray(value) && value.every(isSortEntry))
   )
 }
 
@@ -372,6 +395,9 @@ function isTransformRecipe(value: unknown): value is TransformRecipe {
     r.disabledSteps === undefined ||
     (Array.isArray(r.disabledSteps) &&
       r.disabledSteps.every((s) => typeof s === 'string'))
+  const havingOk =
+    r.havingFilters === undefined ||
+    (Array.isArray(r.havingFilters) && r.havingFilters.every(isColumnFilter))
   return (
     isSelectedObject(r.source) &&
     typeof r.sourceAlias === 'string' &&
@@ -385,8 +411,9 @@ function isTransformRecipe(value: unknown): value is TransformRecipe {
     r.groupBy.every((g) => typeof g === 'string') &&
     Array.isArray(r.aggregations) &&
     r.aggregations.every(isAggregation) &&
+    havingOk &&
     isPivotSpec(r.pivot) &&
-    isSortSpec(r.sort) &&
+    isSortList(r.sort) &&
     disabledOk
   )
 }
@@ -423,7 +450,7 @@ export function defaultTransformLayout(): TransformPanelLayout {
   return {
     objects: { objects: 22, 'transform-main': 78 },
     steps: { builder: 28, results: 72 },
-    results: { table: 55, chart: 45 },
+    results: { table: 100, chart: 0 },
   }
 }
 
@@ -448,8 +475,9 @@ export function makeEmptyRecipe(source: SelectedObject): TransformRecipe {
     columns: [],
     groupBy: [],
     aggregations: [],
+    havingFilters: [],
     pivot: null,
-    sort: null,
+    sort: [],
     disabledSteps: [],
   }
 }
@@ -461,6 +489,10 @@ export function normalizeRecipe(recipe: TransformRecipe): TransformRecipe {
   }
   return {
     ...rest,
+    havingFilters: Array.isArray(rest.havingFilters)
+      ? rest.havingFilters.filter(isColumnFilter)
+      : [],
+    sort: normalizeSortList(rest.sort),
     disabledSteps: normalizeDisabledSteps(rest.disabledSteps),
   }
 }
@@ -571,16 +603,21 @@ export function prepareRecipeForApi(
     }
   }
 
+  const aggregateOff = disabled.has('aggregate')
   return {
     source: recipe.source,
     sourceAlias: recipe.sourceAlias,
     joins,
     filters: disabled.has('filters') ? [] : recipe.filters,
     columns: disabled.has('columns') ? [] : recipe.columns,
-    groupBy: disabled.has('aggregate') ? [] : recipe.groupBy,
-    aggregations: disabled.has('aggregate') ? [] : recipe.aggregations,
+    groupBy: aggregateOff ? [] : recipe.groupBy,
+    aggregations: aggregateOff ? [] : recipe.aggregations,
+    havingFilters:
+      aggregateOff || disabled.has('having')
+        ? []
+        : (recipe.havingFilters ?? []),
     pivot: disabled.has('pivot') ? null : recipe.pivot,
-    sort: disabled.has('order') ? null : recipe.sort,
+    sort: disabled.has('order') ? [] : normalizeSortList(recipe.sort),
     disabledSteps: [],
   }
 }

@@ -117,17 +117,30 @@ type Props = {
   onClose: () => void
   /** Anchor for fixed positioning (avoids overflow clipping). */
   anchorRef?: React.RefObject<HTMLElement | null>
+  /**
+   * When false, hide Values/Drill tabs and skip facet queries
+   * (e.g. HAVING on aggregation aliases with no physical column).
+   */
+  valuesEnabled?: boolean
 }
 
 function isConditionOp(op: FilterOp): boolean {
   return op !== 'in' && !isRelativeFilterOp(op)
 }
 
-function initialMode(type: FacetableType, applied: ColumnFilter[]): Mode {
+function initialMode(
+  type: FacetableType,
+  applied: ColumnFilter[],
+  valuesEnabled: boolean,
+): Mode {
   if (applied.some((f) => isRelativeFilterOp(normalizeFilterOp(f.op)))) {
     return 'relative'
   }
   if (applied.some((f) => isConditionOp(normalizeFilterOp(f.op)))) {
+    return 'condition'
+  }
+  if (!valuesEnabled) {
+    if (type === 'date' || type === 'timestamp') return 'relative'
     return 'condition'
   }
   if (type === 'date' || type === 'timestamp') return 'drill'
@@ -177,6 +190,7 @@ export default function ColumnFilterPopover({
   onApply,
   onClose,
   anchorRef,
+  valuesEnabled = true,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Pos | null>(null)
@@ -222,7 +236,7 @@ export default function ColumnFilterPopover({
   )
 
   const [mode, setMode] = useState<Mode>(() =>
-    initialMode(type, appliedFilters),
+    initialMode(type, appliedFilters, valuesEnabled),
   )
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
@@ -452,7 +466,7 @@ export default function ColumnFilterPopover({
     placeholderData: keepPreviousData,
     staleTime: FACET_STALE_MS,
     gcTime: queryGcTime(FACET_STALE_MS),
-    enabled: mode === 'values',
+    enabled: valuesEnabled && mode === 'values',
   })
 
   const selectedKeys = new Set(selected.map(filterValueKey))
@@ -606,9 +620,9 @@ export default function ColumnFilterPopover({
         <span className={`th-type type-${type}`}>{type}</span>
       </div>
 
-      {isDateType || hasCondition ? (
+      {isDateType || hasCondition || valuesEnabled ? (
         <div className="facet-mode-tabs" role="tablist">
-          {isDateType ? (
+          {valuesEnabled && isDateType ? (
             <button
               type="button"
               role="tab"
@@ -630,15 +644,17 @@ export default function ColumnFilterPopover({
               Relative
             </button>
           ) : null}
-          <button
-            type="button"
-            role="tab"
-            className={`btn-micro${mode === 'values' ? ' open' : ''}`}
-            aria-selected={mode === 'values'}
-            onClick={() => setMode('values')}
-          >
-            Values
-          </button>
+          {valuesEnabled ? (
+            <button
+              type="button"
+              role="tab"
+              className={`btn-micro${mode === 'values' ? ' open' : ''}`}
+              aria-selected={mode === 'values'}
+              onClick={() => setMode('values')}
+            >
+              Values
+            </button>
+          ) : null}
           {hasCondition ? (
             <button
               type="button"

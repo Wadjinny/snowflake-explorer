@@ -211,7 +211,11 @@ def compile_inner_select(
                 a, c = _validate_columns(ref, col_sets, default_alias=default_alias)
                 group_exprs.append(qualify(a, c))
             group_sql = " GROUP BY " + ", ".join(group_exprs)
-        sql = f"SELECT {', '.join(select_parts)} FROM {from_sql}{where}{group_sql}"
+        having = _build_having(recipe)
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM {from_sql}{where}{group_sql}{having}"
+        )
         return sql, output_names
 
     if recipe.columns:
@@ -239,10 +243,25 @@ def _build_qualified_where(recipe: TransformRecipe) -> str:
     filters = [
         (f.column, f.type, f.values, getattr(f, "op", "in") or "in")
         for f in recipe.filters
+        if not getattr(f, "disabled", False)
     ]
     # aliases={} → bare columns fall back to default_alias (the source alias);
     # ``alias.column`` refs are split as usual.
     return build_where(filters, aliases={}, default_alias=recipe.sourceAlias)
+
+
+def _build_having(recipe: TransformRecipe) -> str:
+    """HAVING on bare output aliases (group-by names + aggregation aliases)."""
+    filters = [
+        (f.column, f.type, f.values, getattr(f, "op", "in") or "in")
+        for f in recipe.havingFilters
+        if not getattr(f, "disabled", False)
+    ]
+    # aliases=None → treat filter columns as bare identifiers (SELECT aliases).
+    clause = build_where(filters, aliases=None)
+    if not clause:
+        return ""
+    return " HAVING " + clause.removeprefix(" WHERE ")
 
 
 def compile_pivot_select(
@@ -308,17 +327,21 @@ def compile_pivot_select(
 
 
 def order_limit_sql(
-    sort_column: str | None,
-    direction: str | None,
+    sorts: list[tuple[str, str]] | None,
     limit: int,
     offset: int = 0,
 ) -> str:
+    """*sorts* is a list of (column, direction) pairs."""
     order = ""
-    if sort_column:
-        # Outer SELECT aliases are bare names; allow alias.col from the builder.
-        col = sort_column.split(".")[-1] if "." in sort_column else sort_column
-        dir_sql = "DESC" if direction == "desc" else "ASC"
-        order = f" ORDER BY {quote_ident(col)} {dir_sql} NULLS LAST"
+    if sorts:
+        parts: list[str] = []
+        for sort_column, direction in sorts:
+            # Outer SELECT aliases are bare names; allow alias.col from the builder.
+            col = sort_column.split(".")[-1] if "." in sort_column else sort_column
+            dir_sql = "DESC" if direction == "desc" else "ASC"
+            parts.append(f"{quote_ident(col)} {dir_sql} NULLS LAST")
+        if parts:
+            order = " ORDER BY " + ", ".join(parts)
     off = max(0, int(offset))
     return f"{order} LIMIT {int(limit)} OFFSET {off}"
 

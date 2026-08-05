@@ -8,6 +8,9 @@ import {
   runTransform,
   type TransformRunResult,
 } from '../api/snowflake'
+import DetailInspector, {
+  type GridSelection,
+} from '../components/DetailInspector'
 import ObjectsPanel from '../components/ObjectsPanel'
 import ResultTable from '../components/ResultTable'
 import Spinner from '../components/Spinner'
@@ -32,9 +35,8 @@ import {
 import { useConnections } from '../connections'
 import { useDialog } from '../dialog'
 import { resolveColumnOrder } from '../openTabs'
-import { objectPathFrom } from '../paths'
 import { queryGcTime, TRANSFORM_COLUMNS_STALE_MS } from '../queryStale'
-import type { SavedSelection } from '../selections'
+import { selectionPath, type SavedSelection } from '../selections'
 import {
   defaultTransformLayout,
   defaultTransformName,
@@ -71,12 +73,17 @@ export default function TransformWorkspace() {
   const objectsPanelRef = usePanelRef()
   const builderPanelRef = usePanelRef()
   const chartPanelRef = usePanelRef()
+  const inspectorPanelRef = usePanelRef()
   const objectsGroupRef = useGroupRef()
   const stepsGroupRef = useGroupRef()
   const resultsGroupRef = useGroupRef()
   const [showSql, setShowSql] = useState(false)
   const [result, setResult] = useState<TransformRunResult | null>(null)
   const [hoverColumn, setHoverColumn] = useState<string | null>(null)
+  const [gridSelection, setGridSelection] = useState<GridSelection | null>(
+    null,
+  )
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   const [stepCollapse, setStepCollapse] =
     useState<TransformCollapseApi | null>(null)
   const lastAutoRunTabId = useRef<string | null>(null)
@@ -88,6 +95,9 @@ export default function TransformWorkspace() {
   useEffect(() => {
     setResult(null)
     setShowSql(false)
+    setGridSelection(null)
+    setInspectorOpen(false)
+    inspectorPanelRef.current?.collapse()
   }, [transformId])
 
   // Recover: old URLs used saved id; or tab missing after refresh race.
@@ -244,6 +254,7 @@ export default function TransformWorkspace() {
     const pageSize = next.pageSize ?? tab.pageSize ?? getDefaultPageSize()
     const offset = Math.max(0, next.offset)
     if (next.pageSize !== undefined) setDefaultPageSize(pageSize)
+    setGridSelection(null)
     updateTab(tab.id, {
       ...(next.pageSize !== undefined ? { pageSize } : {}),
       offset,
@@ -257,8 +268,36 @@ export default function TransformWorkspace() {
     updateTab(tab.id, { chart: next })
   }
 
+  const onGridSelectionChange = (sel: GridSelection) => {
+    setGridSelection(sel)
+    setInspectorOpen(true)
+    const panel = inspectorPanelRef.current
+    if (panel?.isCollapsed()) panel.expand()
+  }
+
+  const closeInspector = () => {
+    setGridSelection(null)
+    setInspectorOpen(false)
+    inspectorPanelRef.current?.collapse()
+  }
+
+  useEffect(() => {
+    setGridSelection(null)
+  }, [result])
+
+  useEffect(() => {
+    if (!inspectorOpen && !gridSelection) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      closeInspector()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inspectorOpen, gridSelection])
+
   const onOpenSelection = (sel: SavedSelection) => {
-    navigate(objectPathFrom(sel.object))
+    navigate(selectionPath(sel.id))
   }
 
   const onOpenTransformation = (savedId: string) => {
@@ -751,120 +790,172 @@ export default function TransformWorkspace() {
                 }
               >
                 <Panel id="table" minSize={120}>
-                  <div className="panel data-grid-panel">
-                    <div className="panel-body">
-                      {result ? (
-                        <ResultTable
-                          data={result}
-                          connection={active!}
-                          recipe={recipe!}
-                          probeColumns={columnsQuery.data ?? []}
-                          onFiltersChange={(filters) =>
-                            setRecipe({ ...recipe!, filters })
-                          }
-                          columnOrder={tab.columnOrder ?? []}
-                          onColumnOrderChange={(order) =>
-                            updateTab(tab.id, { columnOrder: order })
-                          }
-                          columnWidths={tab.columnWidths ?? {}}
-                          onColumnWidthsChange={(widths) =>
-                            updateTab(tab.id, { columnWidths: widths })
-                          }
-                          highlightColumn={hoverColumn}
-                          rowOffset={pageOffset + 1}
-                        />
-                      ) : (
-                        <div className="empty-hint">
-                          {!recipe?.source.name ? (
-                            'Pick a source table'
-                          ) : runMut.isError ? (
-                            'Run failed'
+                  <Group
+                    orientation="horizontal"
+                    style={{ height: '100%', width: '100%' }}
+                  >
+                    <Panel id="grid" minSize={200}>
+                      <div className="panel data-grid-panel">
+                        <div className="panel-body">
+                          {result ? (
+                            <ResultTable
+                              data={result}
+                              connection={active!}
+                              recipe={recipe!}
+                              probeColumns={columnsQuery.data ?? []}
+                              onFiltersChange={(filters) =>
+                                setRecipe({ ...recipe!, filters })
+                              }
+                              columnOrder={tab.columnOrder ?? []}
+                              onColumnOrderChange={(order) =>
+                                updateTab(tab.id, { columnOrder: order })
+                              }
+                              columnWidths={tab.columnWidths ?? {}}
+                              onColumnWidthsChange={(widths) =>
+                                updateTab(tab.id, { columnWidths: widths })
+                              }
+                              highlightColumn={hoverColumn}
+                              selection={gridSelection}
+                              onSelectionChange={onGridSelectionChange}
+                              rowOffset={pageOffset + 1}
+                            />
                           ) : (
-                            <Spinner size="md" label="Running…" block />
+                            <div className="empty-hint">
+                              {!recipe?.source.name ? (
+                                'Pick a source table'
+                              ) : runMut.isError ? (
+                                'Run failed'
+                              ) : (
+                                <Spinner size="md" label="Running…" block />
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
-                    </div>
-                    <div className="pager">
-                      <span className="pager-meta">
-                        {runMut.isPending ? <Spinner size="sm" /> : null}
-                        {result ? (
-                          <span>
-                            Rows {pageFrom.toLocaleString()}–
-                            {pageTo.toLocaleString()}
-                            {pageTotal >= 0 ? (
-                              <>
-                                {' '}
-                                of{' '}
-                                <span className="pager-total">
-                                  {pageTotal.toLocaleString()}
-                                </span>
-                              </>
+                        <div className="pager">
+                          <span className="pager-meta">
+                            {runMut.isPending ? <Spinner size="sm" /> : null}
+                            {result ? (
+                              <span>
+                                Rows {pageFrom.toLocaleString()}–
+                                {pageTo.toLocaleString()}
+                                {pageTotal >= 0 ? (
+                                  <>
+                                    {' '}
+                                    of{' '}
+                                    <span className="pager-total">
+                                      {pageTotal.toLocaleString()}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {' · '}
+                                {result.columns.length.toLocaleString()} col
+                                {result.columns.length === 1 ? '' : 's'}
+                              </span>
                             ) : null}
-                            {' · '}
-                            {result.columns.length.toLocaleString()} col
-                            {result.columns.length === 1 ? '' : 's'}
                           </span>
-                        ) : null}
-                      </span>
-                      <div className="toolbar">
-                        <button
-                          type="button"
-                          className="btn-micro"
-                          disabled={!canPrev}
-                          onClick={() =>
-                            setPage({
-                              offset: Math.max(0, pageOffset - pageLimit),
-                            })
-                          }
-                        >
-                          ◀
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-micro"
-                          disabled={!canNext}
-                          onClick={() =>
-                            setPage({ offset: pageOffset + pageLimit })
-                          }
-                        >
-                          ▶
-                        </button>
-                        <select
-                          className="select"
-                          value={pageLimit}
-                          disabled={runMut.isPending}
-                          onChange={(e) =>
-                            setPage({
-                              pageSize: Number(e.target.value),
-                              offset: 0,
-                            })
-                          }
-                          title="Rows per page"
-                          aria-label="Rows per page"
-                        >
-                          {pageSizeOptions.map((size) => (
-                            <option key={size} value={size}>
-                              {size}
-                            </option>
-                          ))}
-                        </select>
-                        {chartCollapsed ? (
-                          <button
-                            type="button"
-                            className="btn-micro btn-icon"
-                            onClick={toggleChartPanel}
-                            title="Expand chart"
-                            aria-label="Expand chart"
-                          >
-                            <span className="tf-chart-toggle">
-                              <SidebarToggleIcon collapsed />
-                            </span>
-                          </button>
-                        ) : null}
+                          <div className="toolbar">
+                            <button
+                              type="button"
+                              className="btn-micro"
+                              disabled={!canPrev}
+                              onClick={() =>
+                                setPage({
+                                  offset: Math.max(0, pageOffset - pageLimit),
+                                })
+                              }
+                            >
+                              ◀
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-micro"
+                              disabled={!canNext}
+                              onClick={() =>
+                                setPage({ offset: pageOffset + pageLimit })
+                              }
+                            >
+                              ▶
+                            </button>
+                            <select
+                              className="select"
+                              value={pageLimit}
+                              disabled={runMut.isPending}
+                              onChange={(e) =>
+                                setPage({
+                                  pageSize: Number(e.target.value),
+                                  offset: 0,
+                                })
+                              }
+                              title="Rows per page"
+                              aria-label="Rows per page"
+                            >
+                              {pageSizeOptions.map((size) => (
+                                <option key={size} value={size}>
+                                  {size}
+                                </option>
+                              ))}
+                            </select>
+                            {chartCollapsed ? (
+                              <button
+                                type="button"
+                                className="btn-micro btn-icon"
+                                onClick={toggleChartPanel}
+                                title="Expand chart"
+                                aria-label="Expand chart"
+                              >
+                                <span className="tf-chart-toggle">
+                                  <SidebarToggleIcon collapsed />
+                                </span>
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    </Panel>
+                    <Separator />
+                    <Panel
+                      id="inspector"
+                      panelRef={inspectorPanelRef}
+                      defaultSize={0}
+                      minSize={220}
+                      collapsible
+                      collapsedSize={0}
+                      onResize={() => {
+                        setInspectorOpen(
+                          !(inspectorPanelRef.current?.isCollapsed() ?? true),
+                        )
+                      }}
+                    >
+                      {result ? (
+                        <DetailInspector
+                          data={result}
+                          selection={gridSelection}
+                          rowNumber={
+                            gridSelection
+                              ? pageOffset + 1 + gridSelection.rowIndex
+                              : null
+                          }
+                          onSelectColumn={(column) => {
+                            if (!gridSelection) return
+                            onGridSelectionChange({
+                              ...gridSelection,
+                              column,
+                            })
+                          }}
+                          onClose={closeInspector}
+                        />
+                      ) : (
+                        <div className="panel">
+                          <div className="panel-header">
+                            <span className="panel-title">Inspector</span>
+                          </div>
+                          <div className="panel-body">
+                            <div className="empty-hint">No data</div>
+                          </div>
+                        </div>
+                      )}
+                    </Panel>
+                  </Group>
                 </Panel>
                 <Separator
                   className="resize-separator"
@@ -873,6 +964,7 @@ export default function TransformWorkspace() {
                 <Panel
                   id="chart"
                   panelRef={chartPanelRef}
+                  defaultSize={0}
                   minSize={140}
                   collapsible
                   collapsedSize={0}

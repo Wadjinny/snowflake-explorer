@@ -16,6 +16,7 @@ import {
 import type {
   ColumnFilter,
   ColumnInfo,
+  ColumnType,
   Connection,
   PreviewResult,
 } from '../types'
@@ -30,6 +31,7 @@ import {
   tableFiltersForTarget,
 } from '../facetTarget'
 import ColumnFilterPopover from './ColumnFilterPopover'
+import type { GridSelection } from './DetailInspector'
 import { formatCell, HeaderFilterButton } from './gridCells'
 
 type Props = {
@@ -45,8 +47,54 @@ type Props = {
   onColumnWidthsChange?: (widths: Record<string, number>) => void
   /** Probe/result column ref hovered in the Columns step. */
   highlightColumn?: string | null
+  selection?: GridSelection | null
+  onSelectionChange?: (selection: GridSelection) => void
   /** First absolute row number on this page (1-based). */
   rowOffset?: number
+}
+
+type CellPos = { row: number; col: number }
+
+type CellRange = {
+  anchor: CellPos
+  focus: CellPos
+}
+
+function normalizeRange(range: CellRange): {
+  r0: number
+  r1: number
+  c0: number
+  c1: number
+} {
+  return {
+    r0: Math.min(range.anchor.row, range.focus.row),
+    r1: Math.max(range.anchor.row, range.focus.row),
+    c0: Math.min(range.anchor.col, range.focus.col),
+    c1: Math.max(range.anchor.col, range.focus.col),
+  }
+}
+
+function cellInRange(
+  row: number,
+  col: number,
+  range: CellRange | null,
+): boolean {
+  if (!range) return false
+  const { r0, r1, c0, c1 } = normalizeRange(range)
+  return row >= r0 && row <= r1 && col >= c0 && col <= c1
+}
+
+function tsvEscape(value: string): string {
+  if (/[\t\n\r"]/.test(value)) return `"${value.replace(/"/g, '""')}"`
+  return value
+}
+
+function copyValue(
+  cell: string | number | boolean | null,
+  type: ColumnType,
+): string {
+  if (cell == null) return ''
+  return formatCell(cell, type)
 }
 
 export default function ResultTable({
@@ -60,6 +108,8 @@ export default function ResultTable({
   columnWidths = {},
   onColumnWidthsChange,
   highlightColumn = null,
+  selection = null,
+  onSelectionChange,
   rowOffset = 1,
 }: Props) {
   const [openColumn, setOpenColumn] = useState<string | null>(null)
@@ -69,7 +119,13 @@ export default function ResultTable({
     name: string
     width: number
   } | null>(null)
+  const [cellRange, setCellRange] = useState<CellRange | null>(null)
   const highlightRef = useRef<HTMLTableCellElement | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const rangeDragging = useRef(false)
+  const rangeModeRef = useRef<'cells' | 'columns'>('cells')
+  const cellRangeRef = useRef<CellRange | null>(null)
+  cellRangeRef.current = cellRange
   const resizeRef = useRef<{
     name: string
     startX: number
@@ -101,6 +157,34 @@ export default function ResultTable({
       .filter((e): e is { col: ColumnInfo; index: number } => Boolean(e))
   }, [data.columns, allNames, columnOrder])
 
+  const navColumns = useMemo(
+    () => visible.map(({ col }) => col.name),
+    [visible],
+  )
+
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const dataRef = useRef(data)
+  dataRef.current = data
+
+  const lastRowIndex = Math.max(0, data.rows.length - 1)
+
+  useEffect(() => {
+    setCellRange(null)
+  }, [data.rows, data.columns])
+
+  useEffect(() => {
+    if (!openColumn) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      setOpenColumn(null)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [openColumn])
+
   useEffect(() => {
     if (!highlightColumn) return
     const el = highlightRef.current
@@ -115,8 +199,272 @@ export default function ResultTable({
   useEffect(() => {
     return () => {
       document.body.classList.remove('col-resizing')
+      document.body.classList.remove('cell-range-selecting')
     }
   }, [])
+
+  const posFromPoint = (clientX: number, clientY: number): CellPos | null => {
+    const el = document.elementFromPoint(clientX, clientY)
+    const td =
+      el instanceof Element ? el.closest('td[data-row][data-vcol]') : null
+    if (!(td instanceof HTMLElement)) return null
+    if (!wrapRef.current?.contains(td)) return null
+    const row = Number(td.dataset.row)
+    const col = Number(td.dataset.vcol)
+    if (!Number.isFinite(row) || !Number.isFinite(col)) return null
+    return { row, col }
+  }
+
+  const vcolFromPoint = (clientX: number, clientY: number): number | null => {
+    const el = document.elementFromPoint(clientX, clientY)
+    if (!(el instanceof Element) || !wrapRef.current?.contains(el)) return null
+    const cell = el.closest('[data-vcol]')
+    if (!(cell instanceof HTMLElement)) return null
+    const col = Number(cell.dataset.vcol)
+    return Number.isFinite(col) ? col : null
+  }
+
+  const attachRangeListeners = (onMove: (ev: PointerEvent) => void) => {
+    const onUp = () => {
+      rangeDragging.current = false
+      document.body.classList.remove('cell-range-selecting')
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+  }
+
+  const beginRangeSelect = (
+    pos: CellPos,
+    e: ReactPointerEvent<HTMLTableCellElement>,
+  ) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setOpenColumn(null)
+    rangeModeRef.current = 'cells'
+    rangeDragging.current = true
+    const next = { anchor: pos, focus: pos }
+    cellRangeRef.current = next
+    setCellRange(next)
+    document.body.classList.add('cell-range-selecting')
+
+    attachRangeListeners((ev) => {
+      if (!rangeDragging.current) return
+      const at = posFromPoint(ev.clientX, ev.clientY)
+      if (!at) return
+      const prev = cellRangeRef.current
+      if (!prev) return
+      if (prev.focus.row === at.row && prev.focus.col === at.col) return
+      const updated = { anchor: prev.anchor, focus: at }
+      cellRangeRef.current = updated
+      setCellRange(updated)
+    })
+  }
+
+  const beginColumnSelect = (
+    vcol: number,
+    e: ReactPointerEvent<HTMLTableCellElement>,
+  ) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setOpenColumn(null)
+    rangeModeRef.current = 'columns'
+    rangeDragging.current = true
+    const last = Math.max(0, dataRef.current.rows.length - 1)
+    const next: CellRange = {
+      anchor: { row: 0, col: vcol },
+      focus: { row: last, col: vcol },
+    }
+    cellRangeRef.current = next
+    setCellRange(next)
+    document.body.classList.add('cell-range-selecting')
+
+    attachRangeListeners((ev) => {
+      if (!rangeDragging.current) return
+      const col = vcolFromPoint(ev.clientX, ev.clientY)
+      if (col == null) return
+      const prev = cellRangeRef.current
+      if (!prev) return
+      const lastR = Math.max(0, dataRef.current.rows.length - 1)
+      if (
+        prev.focus.col === col &&
+        prev.focus.row === lastR &&
+        prev.anchor.row === 0
+      ) {
+        return
+      }
+      const updated: CellRange = {
+        anchor: { row: 0, col: prev.anchor.col },
+        focus: { row: lastR, col },
+      }
+      cellRangeRef.current = updated
+      setCellRange(updated)
+    })
+  }
+
+  const columnFullySelected = (vcol: number): boolean => {
+    if (!cellRange) return false
+    const { r0, r1, c0, c1 } = normalizeRange(cellRange)
+    if (vcol < c0 || vcol > c1) return false
+    if (data.rows.length === 0) return true
+    return r0 === 0 && r1 === lastRowIndex
+  }
+
+  const copyRange = async () => {
+    const range = cellRangeRef.current
+    if (!range) return false
+    const { r0, r1, c0, c1 } = normalizeRange(range)
+    const cols = visibleRef.current
+    const rows = dataRef.current.rows
+    const header: string[] = []
+    for (let c = c0; c <= c1; c++) {
+      const entry = cols[c]
+      header.push(tsvEscape(entry?.col.name ?? ''))
+    }
+    const lines: string[] = [header.join('\t')]
+    for (let r = r0; r <= r1; r++) {
+      const row = rows[r]
+      if (!row) continue
+      const cells: string[] = []
+      for (let c = c0; c <= c1; c++) {
+        const entry = cols[c]
+        if (!entry) {
+          cells.push('')
+          continue
+        }
+        cells.push(
+          tsvEscape(copyValue(row[entry.index] ?? null, entry.col.type)),
+        )
+      }
+      lines.push(cells.join('\t'))
+    }
+    const text = lines.join('\n')
+    if (!text) return false
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // Arrow-key traversal when a cell/row is selected.
+  useEffect(() => {
+    if (!selection || !onSelectionChange) return
+
+    const onKey = (e: KeyboardEvent) => {
+      if (openColumn) return
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return
+      }
+
+      const { key } = e
+      if (
+        key !== 'ArrowLeft' &&
+        key !== 'ArrowRight' &&
+        key !== 'ArrowUp' &&
+        key !== 'ArrowDown'
+      ) {
+        return
+      }
+
+      e.preventDefault()
+      const maxRow = data.rows.length - 1
+      if (maxRow < 0) return
+
+      let rowIndex = selection.rowIndex
+      let column = selection.column
+
+      if (key === 'ArrowUp') {
+        if (rowIndex <= 0) return
+        rowIndex -= 1
+      } else if (key === 'ArrowDown') {
+        if (rowIndex >= maxRow) return
+        rowIndex += 1
+      } else if (key === 'ArrowLeft') {
+        if (navColumns.length === 0) return
+        if (!column) {
+          column = navColumns[navColumns.length - 1] ?? null
+        } else {
+          const i = navColumns.indexOf(column)
+          if (i <= 0) column = null
+          else column = navColumns[i - 1] ?? null
+        }
+      } else if (key === 'ArrowRight') {
+        if (navColumns.length === 0) return
+        if (!column) {
+          column = navColumns[0] ?? null
+        } else {
+          const i = navColumns.indexOf(column)
+          if (i === -1) column = navColumns[0] ?? null
+          else if (i < navColumns.length - 1) column = navColumns[i + 1] ?? null
+          else return
+        }
+      }
+
+      if (rowIndex === selection.rowIndex && column === selection.column) return
+      onSelectionChange({ rowIndex, column })
+    }
+
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [
+    selection,
+    onSelectionChange,
+    openColumn,
+    data.rows.length,
+    navColumns,
+  ])
+
+  // Ctrl/Cmd+C copies the drag-selected cell range as TSV.
+  // Escape clears the range.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const inField =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+
+      if (e.key === 'Escape' && cellRangeRef.current) {
+        e.preventDefault()
+        setCellRange(null)
+        return
+      }
+
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key !== 'c' && e.key !== 'C') return
+      if (!cellRangeRef.current) return
+      if (inField) return
+      e.preventDefault()
+      void copyRange()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Keep the selected cell in view while traversing.
+  useEffect(() => {
+    if (!selection) return
+    const el = selection.column
+      ? document.querySelector('.result-table td.cell-selected')
+      : document.querySelector('.result-table tr.row-selected td.cell-rownum')
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }, [selection])
 
   if (data.columns.length === 0) {
     return <div className="empty-hint">No columns</div>
@@ -137,8 +485,6 @@ export default function ResultTable({
       e.preventDefault()
       return
     }
-    // Popover is nested in the draggable <th>; don't treat in-popover
-    // pointer moves (text select, scroll scrub) as a column reorder.
     const t = e.target
     if (t instanceof Element && t.closest('.facet-popover')) {
       e.preventDefault()
@@ -242,12 +588,23 @@ export default function ResultTable({
   }
 
   return (
-    <div className="data-grid-wrap" onClick={() => setOpenColumn(null)}>
+    <div
+      ref={wrapRef}
+      className="data-grid-wrap"
+      onClick={() => setOpenColumn(null)}
+      onPointerDown={(e) => {
+        if (e.ctrlKey || e.metaKey) return
+        if (resizeRef.current || rangeDragging.current) return
+        if (cellRangeRef.current) setCellRange(null)
+      }}
+    >
       <table className="data-table result-table">
         <thead>
           <tr>
-            <th className="th-cell th-rownum">#</th>
-            {visible.map(({ col }) => {
+            <th className="th-cell th-rownum" title="Row">
+              #
+            </th>
+            {visible.map(({ col }, vcol) => {
               const target = facetTargetFromRecipe(
                 col.name,
                 col.type,
@@ -273,6 +630,7 @@ export default function ResultTable({
               const isDragging = dragging === col.name
               const isDropTarget = dropTarget === col.name && !isDragging
               const resized = widthFor(col.name) != null
+              const colSelected = columnFullySelected(vcol)
 
               return (
                 <th
@@ -280,22 +638,39 @@ export default function ResultTable({
                   ref={(node) => {
                     if (highlighted) highlightRef.current = node
                   }}
-                  className={`th-cell${highlighted ? ' col-highlight' : ''}${isDragging ? ' col-dragging' : ''}${isDropTarget ? ' col-drop-target' : ''}${resized ? ' col-resized' : ''}`}
+                  className={`th-cell${highlighted ? ' col-highlight' : ''}${isDragging ? ' col-dragging' : ''}${isDropTarget ? ' col-drop-target' : ''}${resized ? ' col-resized' : ''}${colSelected ? ' col-range' : ''}`}
                   style={colStyle(col.name)}
                   title={
                     onColumnOrderChange
-                      ? `${col.type} — drag to reorder`
-                      : col.type
+                      ? `${col.type} - drag to reorder · drag edge to resize · Ctrl+drag to select`
+                      : `${col.type} · Ctrl+drag to select`
                   }
                   data-col={col.name}
-                  draggable={Boolean(onColumnOrderChange) && !isOpen}
-                  onDragStart={(e) => onDragStart(col.name, e)}
+                  data-vcol={vcol}
+                  draggable={
+                    Boolean(onColumnOrderChange) &&
+                    !isOpen &&
+                    !resizePreview
+                  }
+                  onDragStart={(e) => {
+                    if (e.ctrlKey || e.metaKey) {
+                      e.preventDefault()
+                      return
+                    }
+                    onDragStart(col.name, e)
+                  }}
                   onDragOver={(e) => onDragOver(col.name, e)}
                   onDragLeave={() =>
                     setDropTarget((t) => (t === col.name ? null : t))
                   }
                   onDrop={(e) => onDrop(col.name, e)}
                   onDragEnd={onDragEnd}
+                  onPointerDown={(e) => {
+                    if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return
+                    const targetEl = e.target as Element
+                    if (targetEl.closest('.col-resize-handle')) return
+                    beginColumnSelect(vcol, e)
+                  }}
                 >
                   <div className="th-top">
                     <span className="th-name">{col.name}</span>
@@ -373,35 +748,73 @@ export default function ResultTable({
               </td>
             </tr>
           ) : (
-            data.rows.map((row, i) => (
-              <tr key={i}>
-                <td className="cell-rownum">{rowOffset + i}</td>
-                {visible.map(({ col, index }) => {
-                  const cell = row[index]
-                  const isNull = cell == null
-                  const highlighted = columnMatchesHighlight(
-                    col.name,
-                    highlightColumn,
-                    recipe,
-                    probeColumns,
-                  )
-                  return (
-                    <td
-                      key={col.name}
-                      className={`${
-                        isNull ? 'cell-null' : `cell-type type-${col.type}`
-                      }${highlighted ? ' col-highlight' : ''}${
-                        widthFor(col.name) != null ? ' col-resized' : ''
-                      }`}
-                      style={colStyle(col.name)}
-                      title={isNull ? 'NULL' : String(cell)}
-                    >
-                      {isNull ? 'NULL' : formatCell(cell, col.type)}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))
+            data.rows.map((row, i) => {
+              const rowSelected = selection?.rowIndex === i
+              return (
+                <tr
+                  key={i}
+                  className={rowSelected ? 'row-selected' : undefined}
+                >
+                  <td
+                    className="cell-rownum"
+                    title={`Double-click to inspect row ${rowOffset + i}`}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      setOpenColumn(null)
+                      setCellRange(null)
+                      onSelectionChange?.({ rowIndex: i, column: null })
+                    }}
+                  >
+                    {rowOffset + i}
+                  </td>
+                  {visible.map(({ col, index }, vcol) => {
+                    const cell = row[index]
+                    const isNull = cell == null
+                    const highlighted = columnMatchesHighlight(
+                      col.name,
+                      highlightColumn,
+                      recipe,
+                      probeColumns,
+                    )
+                    const cellSelected =
+                      rowSelected && selection?.column === col.name
+                    const inRange = cellInRange(i, vcol, cellRange)
+                    return (
+                      <td
+                        key={col.name}
+                        className={`${
+                          isNull ? 'cell-null' : `cell-type type-${col.type}`
+                        }${highlighted ? ' col-highlight' : ''}${
+                          cellSelected ? ' cell-selected' : ''
+                        }${inRange ? ' cell-range' : ''}${
+                          widthFor(col.name) != null ? ' col-resized' : ''
+                        }`}
+                        style={colStyle(col.name)}
+                        title={isNull ? 'NULL' : String(cell)}
+                        data-col={col.name}
+                        data-row={i}
+                        data-vcol={vcol}
+                        onPointerDown={(e) => {
+                          if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return
+                          beginRangeSelect({ row: i, col: vcol }, e)
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation()
+                          setOpenColumn(null)
+                          setCellRange(null)
+                          onSelectionChange?.({
+                            rowIndex: i,
+                            column: col.name,
+                          })
+                        }}
+                      >
+                        {isNull ? 'NULL' : formatCell(cell, col.type)}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })
           )}
         </tbody>
       </table>

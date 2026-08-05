@@ -14,6 +14,17 @@ import {
 } from './selections'
 import type { ColumnFilter, SelectedObject, SortSpec } from './types'
 
+export type SelectionUpdate = {
+  name?: string
+  object?: SelectedObject
+  filters?: ColumnFilter[]
+  sort?: SortSpec | null
+  hiddenColumns?: string[]
+  columnOrder?: string[]
+  columnWidths?: Record<string, number>
+  limit?: number
+}
+
 type SelectionsContextValue = {
   selections: SavedSelection[]
   add: (input: {
@@ -26,6 +37,7 @@ type SelectionsContextValue = {
     columnWidths: Record<string, number>
     limit: number
   }) => SavedSelection | null
+  update: (id: string, patch: SelectionUpdate) => void
   remove: (id: string) => void
   rename: (id: string, name: string) => void
 }
@@ -44,6 +56,11 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
     setSelections(loadSelections(activeId))
   }, [activeId])
 
+  const persist = (next: SavedSelection[]) => {
+    if (!activeId) return
+    saveSelections(activeId, next)
+  }
+
   const add: SelectionsContextValue['add'] = (input) => {
     if (!activeId) return null
     const created = makeSelection({
@@ -58,34 +75,59 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
     })
     setSelections((prev) => {
       const next = [created, ...prev]
-      saveSelections(activeId, next)
+      persist(next)
       return next
     })
     return created
+  }
+
+  const update = (id: string, patch: SelectionUpdate) => {
+    if (!activeId) return
+    setSelections((prev) => {
+      const next = prev.map((s) => {
+        if (s.id !== id) return s
+        return {
+          ...s,
+          ...(patch.name !== undefined ? { name: patch.name } : {}),
+          ...(patch.object !== undefined ? { object: patch.object } : {}),
+          ...(patch.filters !== undefined ? { filters: patch.filters } : {}),
+          ...(patch.sort !== undefined ? { sort: patch.sort } : {}),
+          ...(patch.hiddenColumns !== undefined
+            ? { hiddenColumns: patch.hiddenColumns }
+            : {}),
+          ...(patch.columnOrder !== undefined
+            ? { columnOrder: patch.columnOrder }
+            : {}),
+          ...(patch.columnWidths !== undefined
+            ? { columnWidths: patch.columnWidths }
+            : {}),
+          ...(patch.limit !== undefined ? { limit: patch.limit } : {}),
+        }
+      })
+      persist(next)
+      return next
+    })
   }
 
   const remove = (id: string) => {
     if (!activeId) return
     setSelections((prev) => {
       const next = prev.filter((s) => s.id !== id)
-      saveSelections(activeId, next)
+      persist(next)
       return next
     })
   }
 
   const rename = (id: string, name: string) => {
-    if (!activeId) return
     const trimmed = name.trim()
     if (!trimmed) return
-    setSelections((prev) => {
-      const next = prev.map((s) => (s.id === id ? { ...s, name: trimmed } : s))
-      saveSelections(activeId, next)
-      return next
-    })
+    update(id, { name: trimmed })
   }
 
   return (
-    <SelectionsContext.Provider value={{ selections, add, remove, rename }}>
+    <SelectionsContext.Provider
+      value={{ selections, add, update, remove, rename }}
+    >
       {children}
     </SelectionsContext.Provider>
   )

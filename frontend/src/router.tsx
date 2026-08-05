@@ -16,6 +16,10 @@ export const router = createBrowserRouter([
         element: <Explorer />,
       },
       {
+        path: 's/:selectionId',
+        element: <Explorer />,
+      },
+      {
         path: 't',
         element: <TransformWorkspace />,
       },

@@ -132,11 +132,10 @@ def run_transform(
     else:
         inner_sql, _out = compile_inner_select(recipe, schemas, for_pivot=False)
 
-    sort_col = recipe.sort.column if recipe.sort else None
-    sort_dir = recipe.sort.direction if recipe.sort else None
+    sorts = [(s.column, s.direction) for s in recipe.sort]
     data_sql = (
         f"{inner_sql}"
-        f"{order_limit_sql(sort_col, sort_dir, body.limit, body.offset)}"
+        f"{order_limit_sql(sorts, body.limit, body.offset)}"
     )
 
     count_sql = f"SELECT COUNT(*) AS cnt FROM ({inner_sql}) AS _cnt"
