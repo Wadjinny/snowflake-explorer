@@ -27,6 +27,7 @@ import {
 import { useSelections } from '../selectionsContext'
 import type { SavedTransformation } from '../transformations'
 import { useTransformations } from '../transformationsContext'
+import { useTransformTabs } from '../transformTabsContext'
 import { usePruneStaleFavorites } from '../usePruneStaleFavorites'
 import type {
   Connection,
@@ -143,7 +144,10 @@ export default function ObjectTree({
   const {
     transformations,
     remove: removeTransformation,
+    rename: renameTransformation,
   } = useTransformations()
+  const { tabs: transformTabs, updateTab: updateTransformTab } =
+    useTransformTabs()
   const favFns: FavFns = {
     isFavorite,
     hasFavoriteDescendant: (parent) =>
@@ -283,6 +287,25 @@ export default function ObjectTree({
             activeId={activeTransformId}
             onOpen={(id) => onOpenTransformation?.(id)}
             onRemove={removeTransformation}
+            onRename={async (t) => {
+              const name = await dialog.prompt({
+                title: 'Rename transformation',
+                defaultValue: t.name,
+                confirmLabel: 'Rename',
+              })
+              if (name === null) return
+              const trimmed = name.trim()
+              if (!trimmed) return
+              renameTransformation(t.id, trimmed)
+              for (const tab of transformTabs) {
+                if (tab.savedId === t.id) {
+                  updateTransformTab(tab.id, {
+                    name: trimmed,
+                    dirty: tab.dirty,
+                  })
+                }
+              }
+            }}
           />
         </TreeSection>
       ) : null}
@@ -513,11 +536,13 @@ function TransformationsList({
   activeId,
   onOpen,
   onRemove,
+  onRename,
 }: {
   items: SavedTransformation[]
   activeId: string | null
   onOpen: (id: string) => void
   onRemove: (id: string) => void
+  onRename: (t: SavedTransformation) => void | Promise<void>
 }) {
   const dialog = useDialog()
 
@@ -551,7 +576,15 @@ function TransformationsList({
             <span className="tree-icon-slot">
               <TransformIcon />
             </span>
-            <span className="tree-label" title={title}>
+            <span
+              className="tree-label"
+              title={`${title}\nDouble-click to rename`}
+              onDoubleClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                void onRename(t)
+              }}
+            >
               {t.name}
             </span>
             {joinCount > 0 ? (
