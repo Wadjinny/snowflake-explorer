@@ -78,6 +78,8 @@ export type PreviewResult = {
   columns: ColumnInfo[]
   rows: (string | number | boolean | null)[][]
   total: number
+  /** Full table schema when `columns` is a distinct projection subset. */
+  schemaColumns?: ColumnInfo[] | null
 }
 
 export type SelectedObject = {

@@ -488,6 +488,40 @@ export function ExpandAllIcon({ className }: IconProps) {
   )
 }
 
+/** Distinct / unique rows. */
+export function DistinctIcon({ className }: IconProps) {
+  return (
+    <svg
+      {...base}
+      width={12}
+      height={12}
+      className={className ?? 'btn-icon-svg'}
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M3 4.5h10M3 8h10"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        opacity="0.4"
+      />
+      <path
+        d="M3 11.5h10"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+      <path
+        d="M11.2 3.2l1.1 1.1L14.5 2"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 /** Show all (list). */
 export function ListAllIcon({ className }: IconProps) {
   return (

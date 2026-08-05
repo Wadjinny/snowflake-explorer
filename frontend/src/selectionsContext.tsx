@@ -19,6 +19,7 @@ export type SelectionUpdate = {
   object?: SelectedObject
   filters?: ColumnFilter[]
   sort?: SortSpec | null
+  distinct?: boolean
   hiddenColumns?: string[]
   columnOrder?: string[]
   columnWidths?: Record<string, number>
@@ -32,6 +33,7 @@ type SelectionsContextValue = {
     object: SelectedObject
     filters: ColumnFilter[]
     sort: SortSpec | null
+    distinct: boolean
     hiddenColumns: string[]
     columnOrder: string[]
     columnWidths: Record<string, number>
@@ -68,6 +70,7 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
       object: input.object,
       filters: input.filters,
       sort: input.sort,
+      distinct: input.distinct,
       hiddenColumns: input.hiddenColumns,
       columnOrder: input.columnOrder,
       columnWidths: input.columnWidths,
@@ -92,6 +95,7 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
           ...(patch.object !== undefined ? { object: patch.object } : {}),
           ...(patch.filters !== undefined ? { filters: patch.filters } : {}),
           ...(patch.sort !== undefined ? { sort: patch.sort } : {}),
+          ...(patch.distinct !== undefined ? { distinct: patch.distinct } : {}),
           ...(patch.hiddenColumns !== undefined
             ? { hiddenColumns: patch.hiddenColumns }
             : {}),

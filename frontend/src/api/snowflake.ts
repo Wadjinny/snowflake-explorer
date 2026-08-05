@@ -115,6 +115,8 @@ export function previewObject(
   offset: number,
   filters: ColumnFilter[] = [],
   sort: SortSpec | null = null,
+  distinct = false,
+  hiddenColumns: string[] = [],
 ): Promise<PreviewResult> {
   return apiFetch(
     connection,
@@ -122,7 +124,14 @@ export function previewObject(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit, offset, filters, sort }),
+      body: JSON.stringify({
+        limit,
+        offset,
+        filters,
+        sort,
+        distinct,
+        hiddenColumns: distinct ? hiddenColumns : [],
+      }),
     },
   )
 }

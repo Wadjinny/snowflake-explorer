@@ -3,9 +3,11 @@ import {
   defaultTransformLayout,
   defaultTransformName,
   makeEmptyRecipe,
+  makeRecipeFromBrowse,
   normalizeChartConfig,
   normalizeRecipe,
   normalizeTransformLayout,
+  type BrowseTransformSeed,
   type ChartConfig,
   type SavedTransformation,
   type TransformPanelLayout,
@@ -118,8 +120,12 @@ export function saveTransformTabs(
   }
 }
 
-export function makeDraftTab(source: SelectedObject): OpenTransformTab {
-  const recipe = makeEmptyRecipe(source)
+export function makeDraftTab(
+  source: SelectedObject,
+  seed?: BrowseTransformSeed,
+): OpenTransformTab {
+  const recipe =
+    seed != null ? makeRecipeFromBrowse(source, seed) : makeEmptyRecipe(source)
   return {
     id: crypto.randomUUID(),
     savedId: null,

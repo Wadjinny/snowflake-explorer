@@ -20,6 +20,7 @@ import type { SelectedObject } from './types'
 export const SELECTION_DIRTY_KEYS: ReadonlyArray<keyof OpenTab> = [
   'filters',
   'sort',
+  'distinct',
   'hiddenColumns',
   'columnOrder',
   'columnWidths',

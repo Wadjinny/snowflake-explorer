@@ -191,6 +191,7 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
             object: target.object,
             filters: target.filters,
             sort: target.sort,
+            distinct: target.distinct,
             hiddenColumns: target.hiddenColumns,
             columnOrder: target.columnOrder,
             columnWidths: target.columnWidths,

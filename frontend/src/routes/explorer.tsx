@@ -18,6 +18,7 @@ import Spinner from '../components/Spinner'
 import {
   BookmarkIcon,
   ColumnsIcon,
+  DistinctIcon,
   RefreshIcon,
   SidebarToggleIcon,
   StarIcon,
@@ -235,6 +236,7 @@ export default function Explorer() {
   const selected = activeTab?.object ?? urlObject
   const filters = activeTab?.filters ?? []
   const sort = activeTab?.sort ?? null
+  const distinct = activeTab?.distinct ?? false
   const limit = activeTab?.limit ?? getDefaultPageSize(BROWSE_PAGE_SIZE_MAX)
   const offset = activeTab?.offset ?? 0
   const hiddenColumns = activeTab?.hiddenColumns ?? []
@@ -270,6 +272,7 @@ export default function Explorer() {
         object: selected,
         filters,
         sort,
+        distinct,
         hiddenColumns,
         columnOrder,
         columnWidths,
@@ -292,6 +295,7 @@ export default function Explorer() {
       object: selected,
       filters,
       sort,
+      distinct,
       hiddenColumns,
       columnOrder,
       columnWidths,
@@ -333,7 +337,7 @@ export default function Explorer() {
 
   const newTransform = () => {
     if (!selected) return
-    const tab = openDraft(selected)
+    const tab = openDraft(selected, { filters, sort, distinct })
     if (tab) navigate(transformPath(tab.id))
   }
 
@@ -389,6 +393,8 @@ export default function Explorer() {
       offset,
       filters,
       sort,
+      distinct,
+      distinct ? hiddenColumns : [],
     ],
     queryFn: () => {
       if (!active || !selected) throw new Error('No selection')
@@ -401,6 +407,8 @@ export default function Explorer() {
         offset,
         filters,
         sort,
+        distinct,
+        hiddenColumns,
       )
     },
     enabled: Boolean(active && selected),
@@ -598,6 +606,28 @@ export default function Explorer() {
           {selected ? (
             <button
               type="button"
+              className={`btn-micro btn-icon${distinct ? ' active' : ''}`}
+              onClick={() =>
+                updateActiveTab({ distinct: !distinct, offset: 0 })
+              }
+              title={
+                distinct
+                  ? 'Show all rows (distinct off)'
+                  : 'Show distinct rows only'
+              }
+              aria-label={
+                distinct
+                  ? 'Show all rows (distinct off)'
+                  : 'Show distinct rows only'
+              }
+              aria-pressed={distinct}
+            >
+              <DistinctIcon />
+            </button>
+          ) : null}
+          {selected ? (
+            <button
+              type="button"
               className={`btn-micro btn-icon${
                 isLinkedSelection
                   ? selectionDirty
@@ -629,11 +659,16 @@ export default function Explorer() {
               </button>
               {columnsOpen ? (
                 <ColumnPicker
-                  columns={preview.data.columns}
+                  columns={
+                    preview.data.schemaColumns ?? preview.data.columns
+                  }
                   hiddenColumns={hiddenColumns}
                   columnOrder={columnOrder}
                   onChange={(hidden) =>
-                    updateActiveTab({ hiddenColumns: hidden })
+                    updateActiveTab({
+                      hiddenColumns: hidden,
+                      ...(distinct ? { offset: 0 } : {}),
+                    })
                   }
                   onClose={() => setColumnsOpen(false)}
                   onHoverColumn={setHoverColumn}

@@ -6,7 +6,10 @@ import {
   type ReactNode,
 } from 'react'
 import { useConnections } from './connections'
-import type { SavedTransformation } from './transformations'
+import type {
+  BrowseTransformSeed,
+  SavedTransformation,
+} from './transformations'
 import {
   loadTransformTabs,
   makeDraftTab,
@@ -18,7 +21,10 @@ import type { SelectedObject } from './types'
 
 type TransformTabsContextValue = {
   tabs: OpenTransformTab[]
-  openDraft: (source: SelectedObject) => OpenTransformTab | null
+  openDraft: (
+    source: SelectedObject,
+    seed?: BrowseTransformSeed,
+  ) => OpenTransformTab | null
   openSaved: (saved: SavedTransformation) => OpenTransformTab | null
   updateTab: (
     id: string,
@@ -63,9 +69,12 @@ export function TransformTabsProvider({ children }: { children: ReactNode }) {
     saveTransformTabs(activeId, next)
   }
 
-  const openDraft = (source: SelectedObject): OpenTransformTab | null => {
+  const openDraft = (
+    source: SelectedObject,
+    seed?: BrowseTransformSeed,
+  ): OpenTransformTab | null => {
     if (!activeId) return null
-    const tab = makeDraftTab(source)
+    const tab = makeDraftTab(source, seed)
     setTabs((prev) => {
       const next = [...prev, tab]
       persist(next)

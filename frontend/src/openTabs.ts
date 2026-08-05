@@ -8,6 +8,8 @@ export type OpenTab = {
   object: SelectedObject
   filters: ColumnFilter[]
   sort: SortSpec | null
+  /** When true, preview uses SELECT DISTINCT. */
+  distinct: boolean
   limit: number
   offset: number
   /** Column names to hide; empty = show all. */
@@ -75,6 +77,7 @@ function isOpenTab(value: unknown): value is OpenTab {
     t.selectionName === null ||
     typeof t.selectionName === 'string'
   const dirtyOk = t.dirty === undefined || typeof t.dirty === 'boolean'
+  const distinctOk = t.distinct === undefined || typeof t.distinct === 'boolean'
   return (
     typeof t.key === 'string' &&
     !!obj &&
@@ -92,7 +95,8 @@ function isOpenTab(value: unknown): value is OpenTab {
     scrollOk &&
     selectionIdOk &&
     selectionNameOk &&
-    dirtyOk
+    dirtyOk &&
+    distinctOk
   )
 }
 
@@ -107,6 +111,7 @@ function normalizeTab(tab: OpenTab): OpenTab {
       : null
   return {
     ...tab,
+    distinct: Boolean(tab.distinct),
     hiddenColumns: Array.isArray(tab.hiddenColumns) ? tab.hiddenColumns : [],
     columnOrder: Array.isArray(tab.columnOrder) ? tab.columnOrder : [],
     columnWidths:
@@ -150,6 +155,7 @@ export function makeTab(object: SelectedObject): OpenTab {
     object,
     filters: [],
     sort: null,
+    distinct: false,
     limit: getDefaultPageSize(BROWSE_PAGE_SIZE_MAX),
     offset: 0,
     hiddenColumns: [],
@@ -169,6 +175,7 @@ export function makeSelectionTab(sel: SavedSelection): OpenTab {
     object: sel.object,
     filters: sel.filters,
     sort: sel.sort,
+    distinct: Boolean(sel.distinct),
     limit: sel.limit,
     offset: 0,
     hiddenColumns: sel.hiddenColumns,

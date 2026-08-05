@@ -27,7 +27,16 @@ import { facetTargetFromRecipe, tableFiltersForTarget } from '../facetTarget'
 import ColumnFilterPopover from './ColumnFilterPopover'
 import ColumnSelect from './ColumnSelect'
 import TablePicker from './TablePicker'
-import { ChevronIcon, CheckIcon, CloseIcon, EyeIcon, EyeOffIcon, FilterIcon, ListAllIcon } from './TreeIcons'
+import {
+  ChevronIcon,
+  CheckIcon,
+  CloseIcon,
+  DistinctIcon,
+  EyeIcon,
+  EyeOffIcon,
+  FilterIcon,
+  ListAllIcon,
+} from './TreeIcons'
 
 type Props = {
   recipe: TransformRecipe
@@ -1387,23 +1396,52 @@ export default function TransformBuilder({
         </StepShell>
       ) : null}
 
-      {availableSteps.length > 0 ? (
-        <div className="tf-add-steps">
-          <span className="tf-add-steps-label">Add step</span>
-          <div className="tf-add-steps-chips">
-            {availableSteps.map((id) => (
-              <button
-                key={id}
-                type="button"
-                className="btn-micro"
-                onClick={() => addStep(id)}
-              >
-                {STEP_LABELS[id]}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <div className="tf-add-steps">
+        <button
+          type="button"
+          className={`btn-micro btn-icon${recipe.distinct ? ' active' : ''}`}
+          onClick={() => patch({ distinct: !recipe.distinct })}
+          disabled={
+            recipe.aggregations.length > 0 ||
+            recipe.groupBy.length > 0 ||
+            recipe.pivot != null
+          }
+          title={
+            recipe.aggregations.length > 0 ||
+            recipe.groupBy.length > 0 ||
+            recipe.pivot != null
+              ? 'Distinct applies to row selects only'
+              : recipe.distinct
+                ? 'Distinct on (click to turn off)'
+                : 'Distinct off (click for unique rows)'
+          }
+          aria-label={
+            recipe.distinct
+              ? 'Distinct on'
+              : 'Distinct off'
+          }
+          aria-pressed={recipe.distinct}
+        >
+          <DistinctIcon />
+        </button>
+        {availableSteps.length > 0 ? (
+          <>
+            <span className="tf-add-steps-label">Add step</span>
+            <div className="tf-add-steps-chips">
+              {availableSteps.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  className="btn-micro"
+                  onClick={() => addStep(id)}
+                >
+                  {STEP_LABELS[id]}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
     </div>
   )
 }

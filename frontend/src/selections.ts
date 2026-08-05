@@ -13,6 +13,7 @@ export type SavedSelection = {
   object: SelectedObject
   filters: ColumnFilter[]
   sort: SortSpec | null
+  distinct: boolean
   hiddenColumns: string[]
   columnOrder: string[]
   columnWidths: Record<string, number>
@@ -106,6 +107,7 @@ function isSavedSelection(value: unknown): value is SavedSelection {
       Object.values(s.columnWidths as Record<string, unknown>).every(
         (v) => typeof v === 'number',
       ))
+  const distinctOk = s.distinct === undefined || typeof s.distinct === 'boolean'
   return (
     typeof s.id === 'string' &&
     typeof s.name === 'string' &&
@@ -121,6 +123,7 @@ function isSavedSelection(value: unknown): value is SavedSelection {
     s.hiddenColumns.every((c) => typeof c === 'string') &&
     orderOk &&
     widthsOk &&
+    distinctOk &&
     typeof s.limit === 'number' &&
     typeof s.createdAt === 'number'
   )
@@ -129,6 +132,7 @@ function isSavedSelection(value: unknown): value is SavedSelection {
 function normalizeSelection(sel: SavedSelection): SavedSelection {
   return {
     ...sel,
+    distinct: Boolean(sel.distinct),
     columnOrder: Array.isArray(sel.columnOrder) ? sel.columnOrder : [],
     columnWidths:
       sel.columnWidths && typeof sel.columnWidths === 'object'
@@ -178,6 +182,7 @@ export function makeSelection(input: {
   object: SelectedObject
   filters: ColumnFilter[]
   sort: SortSpec | null
+  distinct: boolean
   hiddenColumns: string[]
   columnOrder: string[]
   columnWidths: Record<string, number>
@@ -191,6 +196,7 @@ export function makeSelection(input: {
     object: input.object,
     filters: input.filters,
     sort: input.sort,
+    distinct: Boolean(input.distinct),
     hiddenColumns: input.hiddenColumns,
     columnOrder: input.columnOrder,
     columnWidths: input.columnWidths,

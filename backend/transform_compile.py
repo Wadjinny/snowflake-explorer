@@ -218,6 +218,8 @@ def compile_inner_select(
         )
         return sql, output_names
 
+    select_kw = "SELECT DISTINCT" if recipe.distinct else "SELECT"
+
     if recipe.columns:
         select_parts = []
         for col in recipe.columns:
@@ -225,7 +227,7 @@ def compile_inner_select(
             out = col.as_name or c
             select_parts.append(f"{qualify(a, c)} AS {quote_ident(out)}")
             output_names.append(out)
-        sql = f"SELECT {', '.join(select_parts)} FROM {from_sql}{where}"
+        sql = f"{select_kw} {', '.join(select_parts)} FROM {from_sql}{where}"
         return sql, output_names
 
     select_list = _all_star_select(schemas)
@@ -235,7 +237,7 @@ def compile_inner_select(
             count = seen.get(name, 0)
             seen[name] = count + 1
             output_names.append(name if count == 0 else f"{_alias}_{name}")
-    sql = f"SELECT {select_list} FROM {from_sql}{where}"
+    sql = f"{select_kw} {select_list} FROM {from_sql}{where}"
     return sql, output_names
 
 

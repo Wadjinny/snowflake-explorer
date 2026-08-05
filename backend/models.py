@@ -52,6 +52,8 @@ class PreviewResult(BaseModel):
     columns: list[ColumnInfo]
     rows: list[list[Any]]
     total: int
+    # Full table schema when `columns` is a projected subset (distinct + column pick).
+    schemaColumns: list[ColumnInfo] | None = None
 
 
 FacetableType = Literal["string", "number", "boolean", "date", "timestamp"]
@@ -100,6 +102,9 @@ class PreviewRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     filters: list[ColumnFilter] = Field(default_factory=list)
     sort: SortSpec | None = None
+    distinct: bool = False
+    # When distinct is on, omit these from the SELECT DISTINCT projection.
+    hiddenColumns: list[str] = Field(default_factory=list)
 
 
 class FacetRequest(BaseModel):
@@ -213,6 +218,8 @@ class TransformRecipe(BaseModel):
     pivot: PivotSpec | None = None
     # Multi-column ORDER BY; legacy single SortSpec objects are coerced.
     sort: list[SortSpec] = Field(default_factory=list)
+    # SELECT DISTINCT on the row projection (ignored when aggregating / pivoting).
+    distinct: bool = False
 
     @field_validator("sort", mode="before")
     @classmethod

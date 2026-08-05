@@ -90,7 +90,25 @@ def _needs_sql_truncate(meta: ColumnMeta) -> bool:
     return meta.char_length > _MAX_CELL_CHARS
 
 
-def _preview_select_sql(table: str, columns: list[ColumnMeta]) -> str:
+def _project_visible_columns(
+    meta: list[ColumnMeta], hidden: list[str]
+) -> list[ColumnMeta]:
+    """Drop hidden columns from the projection; keep at least one column."""
+    if not hidden:
+        return meta
+    hidden_exact = set(hidden)
+    hidden_upper = {h.upper() for h in hidden}
+    visible = [
+        c
+        for c in meta
+        if c.name not in hidden_exact and c.name.upper() not in hidden_upper
+    ]
+    return visible if visible else meta
+
+
+def _preview_select_sql(
+    table: str, columns: list[ColumnMeta], *, distinct: bool = False
+) -> str:
     """Build a SELECT list that stubs/truncates only heavy columns."""
     parts: list[str] = []
     for meta in columns:
@@ -109,9 +127,10 @@ def _preview_select_sql(table: str, columns: list[ColumnMeta]) -> str:
             )
         else:
             parts.append(ident)
+    keyword = "SELECT DISTINCT" if distinct else "SELECT"
     if not parts:
-        return f"SELECT * FROM {table}"
-    return f"SELECT {', '.join(parts)} FROM {table}"
+        return f"{keyword} * FROM {table}"
+    return f"{keyword} {', '.join(parts)} FROM {table}"
 
 
 def _approx_count_sql(table: str, where: str) -> str:
@@ -167,9 +186,25 @@ def preview_object(
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
+    use_subset = bool(body.distinct and body.hiddenColumns)
+    project = (
+        _project_visible_columns(meta, body.hiddenColumns)
+        if use_subset
+        else meta
+    )
+    # SELECT DISTINCT requires ORDER BY exprs to appear in the select list.
+    if body.sort and use_subset:
+        sort_names = {c.name for c in project}
+        sort_upper = {c.name.upper() for c in project}
+        if (
+            body.sort.column not in sort_names
+            and body.sort.column.upper() not in sort_upper
+        ):
+            order = ""
+
     names = [c.name for c in meta]
     types = [c.type for c in meta]
-    from_sql = _preview_select_sql(table, meta)
+    from_sql = _preview_select_sql(table, project, distinct=body.distinct)
     data_sql = (
         f"{from_sql}"
         f"{where}"
@@ -180,12 +215,19 @@ def preview_object(
     heavy = is_account_usage(db, schema)
     total = 0
     try:
-        if heavy and where:
-            # Filtered exact COUNT on AU is multi-second; SAMPLE+WHERE is biased
-            # (sample applied before filter). UI already handles total < 0 as "?".
+        if heavy and (where or body.distinct):
+            # Filtered / DISTINCT exact COUNT on AU is multi-second;
+            # SAMPLE+WHERE is biased (sample applied before filter).
+            # UI already handles total < 0 as "?".
             total = -1
         elif heavy:
             _, count_rows = run_query(cfg, _approx_count_sql(table, ""))
+            total = int(count_rows[0][0]) if count_rows else 0
+        elif body.distinct:
+            count_sql = (
+                f"SELECT COUNT(*) AS cnt FROM ({from_sql}{where}) AS _distinct"
+            )
+            _, count_rows = run_query(cfg, count_sql)
             total = int(count_rows[0][0]) if count_rows else 0
         else:
             count_sql = f"SELECT COUNT(*) AS cnt FROM {table}{where}"
@@ -212,10 +254,19 @@ def preview_object(
         )
         for i, n in enumerate(out_names)
     ]
+    schema_columns = (
+        [
+            ColumnInfo(name=c.name, type=cast(ColumnType, c.type))
+            for c in meta
+        ]
+        if use_subset and len(project) < len(meta)
+        else None
+    )
     return PreviewResult(
         columns=columns,
         rows=[[_serialize_cell(cell) for cell in row] for row in rows],
         total=total,
+        schemaColumns=schema_columns,
     )
 
 

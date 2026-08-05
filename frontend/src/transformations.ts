@@ -5,6 +5,7 @@ import type {
   SelectedObject,
   SortSpec,
 } from './types'
+import { normalizeColumnFilter } from './types'
 import {
   isColumnWidthsRecord,
   normalizeColumnWidths,
@@ -113,8 +114,17 @@ export type TransformRecipe = {
   pivot: PivotSpec | null
   /** Multi-column ORDER BY (empty = no order). */
   sort: SortSpec[]
+  /** SELECT DISTINCT on the row projection (ignored when aggregating / pivoting). */
+  distinct: boolean
   /** Steps present in the builder but skipped when running. */
   disabledSteps: TransformStepId[]
+}
+
+/** Browse-tab state carried into a new transform draft. */
+export type BrowseTransformSeed = {
+  filters?: ColumnFilter[]
+  sort?: SortSpec | null
+  distinct?: boolean
 }
 
 export type SavedTransformation = {
@@ -398,6 +408,7 @@ function isTransformRecipe(value: unknown): value is TransformRecipe {
   const havingOk =
     r.havingFilters === undefined ||
     (Array.isArray(r.havingFilters) && r.havingFilters.every(isColumnFilter))
+  const distinctOk = r.distinct === undefined || typeof r.distinct === 'boolean'
   return (
     isSelectedObject(r.source) &&
     typeof r.sourceAlias === 'string' &&
@@ -414,6 +425,7 @@ function isTransformRecipe(value: unknown): value is TransformRecipe {
     havingOk &&
     isPivotSpec(r.pivot) &&
     isSortList(r.sort) &&
+    distinctOk &&
     disabledOk
   )
 }
@@ -478,7 +490,39 @@ export function makeEmptyRecipe(source: SelectedObject): TransformRecipe {
     havingFilters: [],
     pivot: null,
     sort: [],
+    distinct: false,
     disabledSteps: [],
+  }
+}
+
+/** Seed a recipe from browse filters / sort / distinct. */
+export function makeRecipeFromBrowse(
+  source: SelectedObject,
+  seed: BrowseTransformSeed = {},
+): TransformRecipe {
+  const base = makeEmptyRecipe(source)
+  const alias = base.sourceAlias
+  const filters = (seed.filters ?? []).map((f) => {
+    const normalized = normalizeColumnFilter(f)
+    const column = normalized.column.includes('.')
+      ? normalized.column
+      : formatColumnRef(alias, normalized.column)
+    return { ...normalized, column }
+  })
+  const sort =
+    seed.sort != null
+      ? [
+          {
+            column: seed.sort.column,
+            direction: seed.sort.direction,
+          },
+        ]
+      : []
+  return {
+    ...base,
+    filters,
+    sort,
+    distinct: Boolean(seed.distinct),
   }
 }
 
@@ -493,6 +537,7 @@ export function normalizeRecipe(recipe: TransformRecipe): TransformRecipe {
       ? rest.havingFilters.filter(isColumnFilter)
       : [],
     sort: normalizeSortList(rest.sort),
+    distinct: Boolean(rest.distinct),
     disabledSteps: normalizeDisabledSteps(rest.disabledSteps),
   }
 }
@@ -618,6 +663,7 @@ export function prepareRecipeForApi(
         : (recipe.havingFilters ?? []),
     pivot: disabled.has('pivot') ? null : recipe.pivot,
     sort: disabled.has('order') ? [] : normalizeSortList(recipe.sort),
+    distinct: Boolean(recipe.distinct),
     disabledSteps: [],
   }
 }
