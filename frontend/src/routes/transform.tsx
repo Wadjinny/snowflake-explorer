@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router'
+import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router'
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from 'react-resizable-panels'
 import type { Layout } from 'react-resizable-panels'
 import {
@@ -11,7 +11,6 @@ import {
 import DetailInspector, {
   type GridSelection,
 } from '../components/DetailInspector'
-import ObjectsPanel from '../components/ObjectsPanel'
 import ResultTable from '../components/ResultTable'
 import Spinner from '../components/Spinner'
 import SqlPreviewModal from '../components/SqlPreviewModal'
@@ -19,7 +18,6 @@ import TransformBuilder, {
   type TransformCollapseApi,
 } from '../components/TransformBuilder'
 import TransformChart from '../components/TransformChart'
-import TransformTabBar from '../components/TransformTabBar'
 import {
   BookmarkIcon,
   CloseIcon,
@@ -36,10 +34,7 @@ import { useConnections } from '../connections'
 import { useDialog } from '../dialog'
 import { resolveColumnOrder } from '../openTabs'
 import { queryGcTime, TRANSFORM_COLUMNS_STALE_MS } from '../queryStale'
-import { selectionPath, type SavedSelection } from '../selections'
 import {
-  defaultTransformLayout,
-  defaultTransformName,
   normalizeTransformLayout,
   prepareRecipeForApi,
   type ChartConfig,
@@ -50,6 +45,9 @@ import { useTransformations } from '../transformationsContext'
 import { TRANSFORM_HOME, transformPath } from '../transformTabs'
 import { useTransformTabs } from '../transformTabsContext'
 import { getDefaultPageSize, setDefaultPageSize } from '../pageSizePrefs'
+import { transformHandle } from '../workspaceTabs'
+import { useWorkspaceTabs } from '../workspaceTabsContext'
+import type { WorkspaceOutletContext } from '../workspaceOutlet'
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 
@@ -63,18 +61,15 @@ export default function TransformWorkspace() {
   const location = useLocation()
   const { active } = useConnections()
   const dialog = useDialog()
-  const {
-    transformations,
-    add: addSaved,
-    update: updateSaved,
-  } = useTransformations()
-  const { tabs, openDraft, openSaved, updateTab, closeTab, getTab } =
+  const { transformations, update: updateSaved } = useTransformations()
+  const { tabs, openDraft, openSaved, updateTab, getTab } =
     useTransformTabs()
-  const objectsPanelRef = usePanelRef()
+  const { closeUnified, saveTransformTab } = useWorkspaceTabs()
+  const { objectsCollapsed, toggleObjectsPanel } =
+    useOutletContext<WorkspaceOutletContext>()
   const builderPanelRef = usePanelRef()
   const chartPanelRef = usePanelRef()
   const inspectorPanelRef = usePanelRef()
-  const objectsGroupRef = useGroupRef()
   const stepsGroupRef = useGroupRef()
   const resultsGroupRef = useGroupRef()
   const [showSql, setShowSql] = useState(false)
@@ -141,7 +136,6 @@ export default function TransformWorkspace() {
     ],
     queryFn: () => {
       if (!active || !recipe) throw new Error('No recipe')
-      // Include named join targets even without ON (for column pickers).
       return probeTransformColumns(
         active,
         prepareRecipeForApi(recipe, {
@@ -187,7 +181,6 @@ export default function TransformWorkspace() {
 
   useEffect(() => {
     if (!tab || !active || !recipe?.source.name) return
-    // Auto-run on tab open; `autoRun` location state forces a re-run (e.g. reopen saved).
     if (!autoRun && lastAutoRunTabId.current === tab.id) return
     lastAutoRunTabId.current = tab.id
     if (autoRun) {
@@ -228,11 +221,6 @@ export default function TransformWorkspace() {
     })
   }
 
-  const {
-    collapsed: objectsCollapsed,
-    syncCollapsed: syncObjectsCollapsed,
-    toggle: toggleObjectsPanel,
-  } = usePanelToggle(objectsPanelRef, objectsGroupRef, 'objects', patchLayout)
   const {
     collapsed: builderCollapsed,
     syncCollapsed: syncBuilderCollapsed,
@@ -296,21 +284,6 @@ export default function TransformWorkspace() {
     return () => window.removeEventListener('keydown', onKey)
   }, [inspectorOpen, gridSelection])
 
-  const onOpenSelection = (sel: SavedSelection) => {
-    navigate(selectionPath(sel.id))
-  }
-
-  const onOpenTransformation = (savedId: string) => {
-    const saved = transformations.find((t) => t.id === savedId)
-    if (!saved) return
-    const opened = openSaved(saved)
-    if (opened) {
-      navigate(transformPath(opened.id), {
-        state: { autoRun: true } satisfies TransformLocationState,
-      })
-    }
-  }
-
   const onRename = async () => {
     if (!tab) return
     const name = await dialog.prompt({
@@ -325,66 +298,9 @@ export default function TransformWorkspace() {
     if (tab.savedId) updateSaved(tab.savedId, { name: trimmed })
   }
 
-  /** Persist a transform tab. Returns false if the user cancelled naming. */
-  const saveTab = async (
-    target: NonNullable<typeof tab>,
-  ): Promise<boolean> => {
-    const layoutToSave = normalizeTransformLayout(target.layout)
-    const columnOrderToSave = target.columnOrder ?? []
-    const columnWidthsToSave = target.columnWidths ?? {}
-    const pageSizeToSave = target.pageSize ?? getDefaultPageSize()
-    if (target.savedId) {
-      updateSaved(target.savedId, {
-        name: target.name,
-        recipe: target.recipe,
-        chart: target.chart,
-        layout: layoutToSave,
-        columnOrder: columnOrderToSave,
-        columnWidths: columnWidthsToSave,
-        pageSize: pageSizeToSave,
-      })
-      updateTab(target.id, {
-        dirty: false,
-        layout: layoutToSave,
-        columnOrder: columnOrderToSave,
-        columnWidths: columnWidthsToSave,
-        pageSize: pageSizeToSave,
-      })
-      return true
-    }
-    const suggested = target.name || defaultTransformName(target.recipe)
-    const name = await dialog.prompt({
-      title: 'Save transformation',
-      message: 'Name for the Transformations list.',
-      defaultValue: suggested,
-      confirmLabel: 'Save',
-    })
-    if (name === null) return false
-    const created = addSaved({
-      name: name.trim() || suggested,
-      recipe: target.recipe,
-      chart: target.chart,
-      layout: layoutToSave,
-      columnOrder: columnOrderToSave,
-      columnWidths: columnWidthsToSave,
-      pageSize: pageSizeToSave,
-    })
-    if (!created) return false
-    updateTab(target.id, {
-      savedId: created.id,
-      name: created.name,
-      dirty: false,
-      layout: layoutToSave,
-      columnOrder: columnOrderToSave,
-      columnWidths: columnWidthsToSave,
-      pageSize: pageSizeToSave,
-    })
-    return true
-  }
-
   const onSave = async () => {
     if (!tab) return
-    await saveTab(tab)
+    await saveTransformTab(tab)
   }
 
   const onDuplicateDraft = () => {
@@ -404,31 +320,6 @@ export default function TransformWorkspace() {
       savedId: null,
     })
     navigate(transformPath(copy.id))
-  }
-
-  const onCloseTab = async (id: string) => {
-    const target = tabs.find((t) => t.id === id)
-    if (!target) return
-    if (target.dirty) {
-      const choice = await dialog.unsaved({
-        title: 'Unsaved changes',
-        message: `"${target.name}" has unsaved changes. Save before closing?`,
-      })
-      if (choice === 'cancel') return
-      if (choice === 'save') {
-        const saved = await saveTab(target)
-        if (!saved) return
-      }
-    }
-    const idx = tabs.findIndex((t) => t.id === id)
-    const next = tabs.filter((t) => t.id !== id)
-    closeTab(id)
-    if (id === tab?.id) {
-      const fallback = next[idx] ?? next[idx - 1] ?? next[0] ?? null
-      navigate(fallback ? transformPath(fallback.id) : TRANSFORM_HOME, {
-        replace: true,
-      })
-    }
   }
 
   const exportCsv = () => {
@@ -468,57 +359,29 @@ export default function TransformWorkspace() {
   }, [tab, transformations, updateTab])
 
   if (!transformId || !tab) {
-    const emptyLayout = defaultTransformLayout()
     return (
-      <Group
-        orientation="horizontal"
-        style={{ height: '100%', width: '100%' }}
-        defaultLayout={emptyLayout.objects}
-      >
-        <Panel
-          id="objects"
-          panelRef={objectsPanelRef}
-          minSize={160}
-          collapsible
-          collapsedSize={0}
-          onResize={syncObjectsCollapsed}
-        >
-          <ObjectsPanel
-            connection={active}
-            mode="transform"
-            selected={null}
-            onOpenSelection={onOpenSelection}
-            onOpenTransformation={onOpenTransformation}
-            activeTransformId={null}
-            onCollapse={toggleObjectsPanel}
-          />
-        </Panel>
-        <Separator disabled={objectsCollapsed} />
-        <Panel id="transform-main" minSize={200}>
-          <div className="panel">
-            <div className="panel-header">
-              {objectsCollapsed ? (
-                <button
-                  type="button"
-                  className="btn-micro btn-icon"
-                  onClick={toggleObjectsPanel}
-                  title="Expand objects panel"
-                >
-                  <SidebarToggleIcon collapsed />
-                </button>
-              ) : null}
-              <span className="panel-title">Transform</span>
-            </div>
-            <div className="panel-body">
-              <div className="empty-hint">
-                {transformId
-                  ? 'Opening…'
-                  : 'Open a saved transformation, or start one from Browse with a table open.'}
-              </div>
-            </div>
+      <div className="panel">
+        <div className="panel-header">
+          {objectsCollapsed ? (
+            <button
+              type="button"
+              className="btn-micro btn-icon"
+              onClick={toggleObjectsPanel}
+              title="Expand objects panel"
+            >
+              <SidebarToggleIcon collapsed />
+            </button>
+          ) : null}
+          <span className="panel-title">Transform</span>
+        </div>
+        <div className="panel-body">
+          <div className="empty-hint">
+            {transformId
+              ? 'Opening…'
+              : 'Open a saved transformation, or start one from a table tab.'}
           </div>
-        </Panel>
-      </Group>
+        </div>
+      </div>
     )
   }
 
@@ -541,475 +404,438 @@ export default function TransformWorkspace() {
     : [...PAGE_SIZES, pageLimit].sort((a, b) => a - b)
 
   return (
-    <Group
-      key={tab.id}
-      groupRef={objectsGroupRef}
-      orientation="horizontal"
-      style={{ height: '100%', width: '100%' }}
-      defaultLayout={layout.objects}
-      onLayoutChanged={(next, meta) => patchLayout('objects', next, meta)}
-    >
-      <Panel
-        id="objects"
-        panelRef={objectsPanelRef}
-        minSize={160}
-        collapsible
-        collapsedSize={0}
-        onResize={syncObjectsCollapsed}
-      >
-        <ObjectsPanel
-          connection={active}
-          mode="transform"
-          selected={null}
-          onOpenSelection={onOpenSelection}
-          onOpenTransformation={onOpenTransformation}
-          activeTransformId={tab.savedId}
-          onCollapse={toggleObjectsPanel}
-        />
-      </Panel>
-
-      <Separator disabled={objectsCollapsed} />
-
-      <Panel id="transform-main" minSize={400}>
-        <div className="panel transform-workspace">
-          <div className="panel-header">
-            {objectsCollapsed ? (
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={toggleObjectsPanel}
-                title="Expand objects panel"
-              >
-                <SidebarToggleIcon collapsed />
-              </button>
-            ) : null}
-            {builderCollapsed ? (
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={toggleBuilderPanel}
-                title="Expand steps"
-                aria-label="Expand steps"
-              >
-                <SidebarToggleIcon collapsed />
-              </button>
-            ) : null}
-            <span className="panel-title" style={{ display: 'flex', gap: 6 }}>
-              <TransformIcon />
-              <button
-                type="button"
-                className="tf-name-btn"
-                onClick={onRename}
-                title="Rename"
-              >
-                {tab.name}
-                {tab.dirty ? ' •' : ''}
-              </button>
-              {!isSaved ? (
-                <span className="kind-badge">draft</span>
-              ) : null}
-            </span>
-            <div className="panel-header-actions">
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={() => onCloseTab(tab.id)}
-                title="Close draft"
-                aria-label="Close draft"
-              >
-                <CloseIcon />
-              </button>
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={onDuplicateDraft}
-                title="Duplicate draft"
-                aria-label="Duplicate draft"
-              >
-                <DuplicateIcon />
-              </button>
-              <button
-                type="button"
-                className={`btn-micro btn-icon${showSql ? ' open' : ''}`}
-                onClick={() => setShowSql(true)}
-                disabled={!result}
-                title="Show SQL"
-                aria-label="Show SQL"
-              >
-                <SqlIcon />
-              </button>
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={exportCsv}
-                disabled={!result}
-                title="Export CSV"
-                aria-label="Export CSV"
-              >
-                <CsvIcon />
-              </button>
-              <button
-                type="button"
-                className={`btn-micro btn-icon${tab.dirty || !isSaved ? ' open' : ''}`}
-                onClick={onSave}
-                disabled={isSaved && !tab.dirty}
-                title={
-                  isSaved
-                    ? 'Update saved transformation'
-                    : 'Save to Transformations list'
-                }
-                aria-label={saveLabel}
-              >
-                <BookmarkIcon filled={isSaved && !tab.dirty} />
-              </button>
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={() => runMut.mutate({})}
-                disabled={!active || runMut.isPending}
-                title={
-                  runMut.isPending ? 'Running…' : 'Run (Ctrl+Enter)'
-                }
-                aria-label={runMut.isPending ? 'Running' : 'Run'}
-              >
-                {runMut.isPending ? <Spinner size="sm" /> : <PlayIcon />}
-              </button>
-            </div>
-          </div>
-
-          <TransformTabBar
-            tabs={tabs}
-            activeId={tab.id}
-            onClose={onCloseTab}
-          />
-
-          {runMut.isError ? (
-            <div className="error-bar">
-              {runMut.error instanceof Error
-                ? runMut.error.message
-                : 'Transform failed'}
-            </div>
-          ) : null}
-          {columnsQuery.isError ? (
-            <div className="error-bar">
-              {columnsQuery.error instanceof Error
-                ? columnsQuery.error.message
-                : 'Failed to probe columns'}
-            </div>
-          ) : null}
-
-          {showSql && result ? (
-            <SqlPreviewModal
-              open={showSql}
-              sql={result.sql}
-              onClose={() => setShowSql(false)}
-              title="Compiled SQL"
-            />
-          ) : null}
-
-          <Group
-            groupRef={stepsGroupRef}
-            orientation="horizontal"
-            style={{ flex: 1, minHeight: 0, width: '100%' }}
-            defaultLayout={layout.steps}
-            onLayoutChanged={(next, meta) => patchLayout('steps', next, meta)}
+    <div className="panel transform-workspace">
+      <div className="panel-header">
+        {objectsCollapsed ? (
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={toggleObjectsPanel}
+            title="Expand objects panel"
           >
-            <Panel
-              id="builder"
-              panelRef={builderPanelRef}
-              minSize={200}
-              collapsible
-              collapsedSize={0}
-              onResize={syncBuilderCollapsed}
-            >
-              <div
-                className="panel"
-                style={{
-                  height: '100%',
-                  borderRight: '1px solid var(--border)',
-                }}
-              >
-                <div className="panel-header">
-                  <span className="panel-title">Steps</span>
-                  <div className="panel-header-actions">
-                    {stepCollapse ? (
-                      <>
-                        <button
-                          type="button"
-                          className="btn-micro btn-icon"
-                          onClick={stepCollapse.expandAll}
-                          disabled={!stepCollapse.canExpand}
-                          title="Expand all steps"
-                          aria-label="Expand all steps"
-                        >
-                          <ExpandAllIcon />
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-micro btn-icon"
-                          onClick={stepCollapse.collapseAll}
-                          disabled={!stepCollapse.canCollapse}
-                          title="Collapse all steps"
-                          aria-label="Collapse all steps"
-                        >
-                          <FoldAllIcon />
-                        </button>
-                      </>
-                    ) : null}
+            <SidebarToggleIcon collapsed />
+          </button>
+        ) : null}
+        {builderCollapsed ? (
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={toggleBuilderPanel}
+            title="Expand steps"
+            aria-label="Expand steps"
+          >
+            <SidebarToggleIcon collapsed />
+          </button>
+        ) : null}
+        <span className="panel-title" style={{ display: 'flex', gap: 6 }}>
+          <TransformIcon />
+          <button
+            type="button"
+            className="tf-name-btn"
+            onClick={onRename}
+            title="Rename"
+          >
+            {tab.name}
+            {tab.dirty ? ' •' : ''}
+          </button>
+          {!isSaved ? (
+            <span className="kind-badge">draft</span>
+          ) : null}
+        </span>
+        <div className="panel-header-actions">
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={() => void closeUnified(transformHandle(tab.id))}
+            title="Close draft"
+            aria-label="Close draft"
+          >
+            <CloseIcon />
+          </button>
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={onDuplicateDraft}
+            title="Duplicate draft"
+            aria-label="Duplicate draft"
+          >
+            <DuplicateIcon />
+          </button>
+          <button
+            type="button"
+            className={`btn-micro btn-icon${showSql ? ' open' : ''}`}
+            onClick={() => setShowSql(true)}
+            disabled={!result}
+            title="Show SQL"
+            aria-label="Show SQL"
+          >
+            <SqlIcon />
+          </button>
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={exportCsv}
+            disabled={!result}
+            title="Export CSV"
+            aria-label="Export CSV"
+          >
+            <CsvIcon />
+          </button>
+          <button
+            type="button"
+            className={`btn-micro btn-icon${tab.dirty || !isSaved ? ' open' : ''}`}
+            onClick={() => void onSave()}
+            disabled={isSaved && !tab.dirty}
+            title={
+              isSaved
+                ? 'Update saved transformation'
+                : 'Save to Transformations list'
+            }
+            aria-label={saveLabel}
+          >
+            <BookmarkIcon filled={isSaved && !tab.dirty} />
+          </button>
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={() => runMut.mutate({})}
+            disabled={!active || runMut.isPending}
+            title={
+              runMut.isPending ? 'Running…' : 'Run (Ctrl+Enter)'
+            }
+            aria-label={runMut.isPending ? 'Running' : 'Run'}
+          >
+            {runMut.isPending ? <Spinner size="sm" /> : <PlayIcon />}
+          </button>
+        </div>
+      </div>
+
+      {runMut.isError ? (
+        <div className="error-bar">
+          {runMut.error instanceof Error
+            ? runMut.error.message
+            : 'Transform failed'}
+        </div>
+      ) : null}
+      {columnsQuery.isError ? (
+        <div className="error-bar">
+          {columnsQuery.error instanceof Error
+            ? columnsQuery.error.message
+            : 'Failed to probe columns'}
+        </div>
+      ) : null}
+
+      {showSql && result ? (
+        <SqlPreviewModal
+          open={showSql}
+          sql={result.sql}
+          onClose={() => setShowSql(false)}
+          title="Compiled SQL"
+        />
+      ) : null}
+
+      <Group
+        key={tab.id}
+        groupRef={stepsGroupRef}
+        orientation="horizontal"
+        style={{ flex: 1, minHeight: 0, width: '100%' }}
+        defaultLayout={layout.steps}
+        onLayoutChanged={(next, meta) => patchLayout('steps', next, meta)}
+      >
+        <Panel
+          id="builder"
+          panelRef={builderPanelRef}
+          minSize={200}
+          collapsible
+          collapsedSize={0}
+          onResize={syncBuilderCollapsed}
+        >
+          <div
+            className="panel"
+            style={{
+              height: '100%',
+              borderRight: '1px solid var(--border)',
+            }}
+          >
+            <div className="panel-header">
+              <span className="panel-title">Steps</span>
+              <div className="panel-header-actions">
+                {stepCollapse ? (
+                  <>
                     <button
                       type="button"
                       className="btn-micro btn-icon"
-                      onClick={toggleBuilderPanel}
-                      title="Collapse steps"
-                      aria-label="Collapse steps"
+                      onClick={stepCollapse.expandAll}
+                      disabled={!stepCollapse.canExpand}
+                      title="Expand all steps"
+                      aria-label="Expand all steps"
                     >
-                      <SidebarToggleIcon collapsed={false} />
+                      <ExpandAllIcon />
                     </button>
-                  </div>
-                </div>
-                <div className="panel-body">
-                  {columnsQuery.isLoading ? (
-                    <div className="empty-hint">
-                      <Spinner size="md" label="Loading columns…" block />
-                    </div>
-                  ) : (
-                  <TransformBuilder
-                    recipe={recipe!}
-                    columns={columnsQuery.data ?? []}
-                    connection={active!}
-                    onChange={setRecipe}
-                    onHoverColumn={setHoverColumn}
-                    onCollapseApi={setStepCollapse}
-                  />
-                  )}
-                </div>
-              </div>
-            </Panel>
-            <Separator
-              className="resize-separator"
-              disabled={builderCollapsed}
-            />
-            <Panel id="results" minSize={280}>
-              <Group
-                groupRef={resultsGroupRef}
-                orientation="vertical"
-                style={{ height: '100%', width: '100%' }}
-                defaultLayout={layout.results}
-                onLayoutChanged={(next, meta) =>
-                  patchLayout('results', next, meta)
-                }
-              >
-                <Panel id="table" minSize={120}>
-                  <Group
-                    orientation="horizontal"
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <Panel id="grid" minSize={200}>
-                      <div className="panel data-grid-panel">
-                        <div className="panel-body">
-                          {result ? (
-                            <ResultTable
-                              data={result}
-                              connection={active!}
-                              recipe={recipe!}
-                              probeColumns={columnsQuery.data ?? []}
-                              onFiltersChange={(filters) =>
-                                setRecipe({ ...recipe!, filters })
-                              }
-                              columnOrder={tab.columnOrder ?? []}
-                              onColumnOrderChange={(order) =>
-                                updateTab(tab.id, { columnOrder: order })
-                              }
-                              columnWidths={tab.columnWidths ?? {}}
-                              onColumnWidthsChange={(widths) =>
-                                updateTab(tab.id, { columnWidths: widths })
-                              }
-                              highlightColumn={hoverColumn}
-                              selection={gridSelection}
-                              onSelectionChange={onGridSelectionChange}
-                              rowOffset={pageOffset + 1}
-                            />
-                          ) : (
-                            <div className="empty-hint">
-                              {!recipe?.source.name ? (
-                                'Pick a source table'
-                              ) : runMut.isError ? (
-                                'Run failed'
-                              ) : (
-                                <Spinner size="md" label="Running…" block />
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="pager">
-                          <span className="pager-meta">
-                            {runMut.isPending ? <Spinner size="sm" /> : null}
-                            {result ? (
-                              <span>
-                                Rows {pageFrom.toLocaleString()}–
-                                {pageTo.toLocaleString()}
-                                {pageTotal >= 0 ? (
-                                  <>
-                                    {' '}
-                                    of{' '}
-                                    <span className="pager-total">
-                                      {pageTotal.toLocaleString()}
-                                    </span>
-                                  </>
-                                ) : null}
-                                {' · '}
-                                {result.columns.length.toLocaleString()} col
-                                {result.columns.length === 1 ? '' : 's'}
-                              </span>
-                            ) : null}
-                          </span>
-                          <div className="toolbar">
-                            <button
-                              type="button"
-                              className="btn-micro"
-                              disabled={!canPrev}
-                              onClick={() =>
-                                setPage({
-                                  offset: Math.max(0, pageOffset - pageLimit),
-                                })
-                              }
-                            >
-                              ◀
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-micro"
-                              disabled={!canNext}
-                              onClick={() =>
-                                setPage({ offset: pageOffset + pageLimit })
-                              }
-                            >
-                              ▶
-                            </button>
-                            <select
-                              className="select"
-                              value={pageLimit}
-                              disabled={runMut.isPending}
-                              onChange={(e) =>
-                                setPage({
-                                  pageSize: Number(e.target.value),
-                                  offset: 0,
-                                })
-                              }
-                              title="Rows per page"
-                              aria-label="Rows per page"
-                            >
-                              {pageSizeOptions.map((size) => (
-                                <option key={size} value={size}>
-                                  {size}
-                                </option>
-                              ))}
-                            </select>
-                            {chartCollapsed ? (
-                              <button
-                                type="button"
-                                className="btn-micro btn-icon"
-                                onClick={toggleChartPanel}
-                                title="Expand chart"
-                                aria-label="Expand chart"
-                              >
-                                <span className="tf-chart-toggle">
-                                  <SidebarToggleIcon collapsed />
-                                </span>
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    </Panel>
-                    <Separator />
-                    <Panel
-                      id="inspector"
-                      panelRef={inspectorPanelRef}
-                      defaultSize={0}
-                      minSize={220}
-                      collapsible
-                      collapsedSize={0}
-                      onResize={() => {
-                        setInspectorOpen(
-                          !(inspectorPanelRef.current?.isCollapsed() ?? true),
-                        )
-                      }}
+                    <button
+                      type="button"
+                      className="btn-micro btn-icon"
+                      onClick={stepCollapse.collapseAll}
+                      disabled={!stepCollapse.canCollapse}
+                      title="Collapse all steps"
+                      aria-label="Collapse all steps"
                     >
+                      <FoldAllIcon />
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn-micro btn-icon"
+                  onClick={toggleBuilderPanel}
+                  title="Collapse steps"
+                  aria-label="Collapse steps"
+                >
+                  <SidebarToggleIcon collapsed={false} />
+                </button>
+              </div>
+            </div>
+            <div className="panel-body">
+              {columnsQuery.isLoading ? (
+                <div className="empty-hint">
+                  <Spinner size="md" label="Loading columns…" block />
+                </div>
+              ) : (
+              <TransformBuilder
+                recipe={recipe!}
+                columns={columnsQuery.data ?? []}
+                connection={active!}
+                onChange={setRecipe}
+                onHoverColumn={setHoverColumn}
+                onCollapseApi={setStepCollapse}
+              />
+              )}
+            </div>
+          </div>
+        </Panel>
+        <Separator
+          className="resize-separator"
+          disabled={builderCollapsed}
+        />
+        <Panel id="results" minSize={280}>
+          <Group
+            groupRef={resultsGroupRef}
+            orientation="vertical"
+            style={{ height: '100%', width: '100%' }}
+            defaultLayout={layout.results}
+            onLayoutChanged={(next, meta) =>
+              patchLayout('results', next, meta)
+            }
+          >
+            <Panel id="table" minSize={120}>
+              <Group
+                orientation="horizontal"
+                style={{ height: '100%', width: '100%' }}
+              >
+                <Panel id="grid" minSize={200}>
+                  <div className="panel data-grid-panel">
+                    <div className="panel-body">
                       {result ? (
-                        <DetailInspector
+                        <ResultTable
                           data={result}
-                          selection={gridSelection}
-                          rowNumber={
-                            gridSelection
-                              ? pageOffset + 1 + gridSelection.rowIndex
-                              : null
+                          connection={active!}
+                          recipe={recipe!}
+                          probeColumns={columnsQuery.data ?? []}
+                          onFiltersChange={(filters) =>
+                            setRecipe({ ...recipe!, filters })
                           }
-                          onSelectColumn={(column) => {
-                            if (!gridSelection) return
-                            onGridSelectionChange({
-                              ...gridSelection,
-                              column,
-                            })
-                          }}
-                          onClose={closeInspector}
+                          columnOrder={tab.columnOrder ?? []}
+                          onColumnOrderChange={(order) =>
+                            updateTab(tab.id, { columnOrder: order })
+                          }
+                          columnWidths={tab.columnWidths ?? {}}
+                          onColumnWidthsChange={(widths) =>
+                            updateTab(tab.id, { columnWidths: widths })
+                          }
+                          highlightColumn={hoverColumn}
+                          selection={gridSelection}
+                          onSelectionChange={onGridSelectionChange}
+                          rowOffset={pageOffset + 1}
                         />
                       ) : (
-                        <div className="panel">
-                          <div className="panel-header">
-                            <span className="panel-title">Inspector</span>
-                          </div>
-                          <div className="panel-body">
-                            <div className="empty-hint">No data</div>
-                          </div>
+                        <div className="empty-hint">
+                          {!recipe?.source.name ? (
+                            'Pick a source table'
+                          ) : runMut.isError ? (
+                            'Run failed'
+                          ) : (
+                            <Spinner size="md" label="Running…" block />
+                          )}
                         </div>
                       )}
-                    </Panel>
-                  </Group>
-                </Panel>
-                <Separator
-                  className="resize-separator"
-                  disabled={chartCollapsed}
-                />
-                <Panel
-                  id="chart"
-                  panelRef={chartPanelRef}
-                  defaultSize={0}
-                  minSize={140}
-                  collapsible
-                  collapsedSize={0}
-                  onResize={syncChartCollapsed}
-                >
-                  <div className="panel-header">
-                    <span className="panel-title">Chart</span>
-                    <div className="panel-header-actions">
-                      <button
-                        type="button"
-                        className="btn-micro btn-icon"
-                        onClick={toggleChartPanel}
-                        title="Collapse chart"
-                        aria-label="Collapse chart"
-                      >
-                        <span className="tf-chart-toggle">
-                          <SidebarToggleIcon collapsed={false} />
-                        </span>
-                      </button>
+                    </div>
+                    <div className="pager">
+                      <span className="pager-meta">
+                        {runMut.isPending ? <Spinner size="sm" /> : null}
+                        {result ? (
+                          <span>
+                            Rows {pageFrom.toLocaleString()}–
+                            {pageTo.toLocaleString()}
+                            {pageTotal >= 0 ? (
+                              <>
+                                {' '}
+                                of{' '}
+                                <span className="pager-total">
+                                  {pageTotal.toLocaleString()}
+                                </span>
+                              </>
+                            ) : null}
+                            {' · '}
+                            {result.columns.length.toLocaleString()} col
+                            {result.columns.length === 1 ? '' : 's'}
+                          </span>
+                        ) : null}
+                      </span>
+                      <div className="toolbar">
+                        <button
+                          type="button"
+                          className="btn-micro"
+                          disabled={!canPrev}
+                          onClick={() =>
+                            setPage({
+                              offset: Math.max(0, pageOffset - pageLimit),
+                            })
+                          }
+                        >
+                          ◀
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-micro"
+                          disabled={!canNext}
+                          onClick={() =>
+                            setPage({ offset: pageOffset + pageLimit })
+                          }
+                        >
+                          ▶
+                        </button>
+                        <select
+                          className="select"
+                          value={pageLimit}
+                          disabled={runMut.isPending}
+                          onChange={(e) =>
+                            setPage({
+                              pageSize: Number(e.target.value),
+                              offset: 0,
+                            })
+                          }
+                          title="Rows per page"
+                          aria-label="Rows per page"
+                        >
+                          {pageSizeOptions.map((size) => (
+                            <option key={size} value={size}>
+                              {size}
+                            </option>
+                          ))}
+                        </select>
+                        {chartCollapsed ? (
+                          <button
+                            type="button"
+                            className="btn-micro btn-icon"
+                            onClick={toggleChartPanel}
+                            title="Expand chart"
+                            aria-label="Expand chart"
+                          >
+                            <span className="tf-chart-toggle">
+                              <SidebarToggleIcon collapsed />
+                            </span>
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-                  <div className="panel-body">
-                    <TransformChart
+                </Panel>
+                <Separator />
+                <Panel
+                  id="inspector"
+                  panelRef={inspectorPanelRef}
+                  defaultSize={0}
+                  minSize={220}
+                  collapsible
+                  collapsedSize={0}
+                  onResize={() => {
+                    setInspectorOpen(
+                      !(inspectorPanelRef.current?.isCollapsed() ?? true),
+                    )
+                  }}
+                >
+                  {result ? (
+                    <DetailInspector
                       data={result}
-                      chart={chart!}
-                      onChange={setChart}
+                      selection={gridSelection}
+                      rowNumber={
+                        gridSelection
+                          ? pageOffset + 1 + gridSelection.rowIndex
+                          : null
+                      }
+                      onSelectColumn={(column) => {
+                        if (!gridSelection) return
+                        onGridSelectionChange({
+                          ...gridSelection,
+                          column,
+                        })
+                      }}
+                      onClose={closeInspector}
                     />
-                  </div>
+                  ) : (
+                    <div className="panel">
+                      <div className="panel-header">
+                        <span className="panel-title">Inspector</span>
+                      </div>
+                      <div className="panel-body">
+                        <div className="empty-hint">No data</div>
+                      </div>
+                    </div>
+                  )}
                 </Panel>
               </Group>
             </Panel>
+            <Separator
+              className="resize-separator"
+              disabled={chartCollapsed}
+            />
+            <Panel
+              id="chart"
+              panelRef={chartPanelRef}
+              defaultSize={0}
+              minSize={140}
+              collapsible
+              collapsedSize={0}
+              onResize={syncChartCollapsed}
+            >
+              <div className="panel-header">
+                <span className="panel-title">Chart</span>
+                <div className="panel-header-actions">
+                  <button
+                    type="button"
+                    className="btn-micro btn-icon"
+                    onClick={toggleChartPanel}
+                    title="Collapse chart"
+                    aria-label="Collapse chart"
+                  >
+                    <span className="tf-chart-toggle">
+                      <SidebarToggleIcon collapsed={false} />
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <div className="panel-body">
+                <TransformChart
+                  data={result}
+                  chart={chart!}
+                  onChange={setChart}
+                />
+              </div>
+            </Panel>
           </Group>
-        </div>
-      </Panel>
-    </Group>
+        </Panel>
+      </Group>
+    </div>
   )
 }
 

@@ -1,6 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams, useLocation } from 'react-router'
+import {
+  useNavigate,
+  useOutletContext,
+  useParams,
+  useSearchParams,
+  useLocation,
+} from 'react-router'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
 import { previewObject } from '../api/snowflake'
 import ColumnPicker from '../components/ColumnPicker'
@@ -8,9 +14,7 @@ import DataGrid from '../components/DataGrid'
 import DetailInspector, {
   type GridSelection,
 } from '../components/DetailInspector'
-import ObjectsPanel from '../components/ObjectsPanel'
 import Spinner from '../components/Spinner'
-import TabBar from '../components/TabBar'
 import {
   BookmarkIcon,
   ColumnsIcon,
@@ -20,16 +24,13 @@ import {
   TransformIcon,
 } from '../components/TreeIcons'
 import { PREVIEW_STALE_MS, queryGcTime } from '../queryStale'
+import { useBrowseTabs } from '../browseTabsContext'
 import { useConnections } from '../connections'
 import { useDialog } from '../dialog'
 import { useFavorites } from '../favoritesContext'
 import {
-  loadTabs,
   makeSelectionTab,
-  saveTabs,
   selectionTabKey,
-  tabPath,
-  upsertTab,
   type OpenTab,
 } from '../openTabs'
 import {
@@ -47,10 +48,8 @@ import {
 import {
   defaultSelectionName,
   selectionPath,
-  type SavedSelection,
 } from '../selections'
 import { useSelections } from '../selectionsContext'
-import { useTransformations } from '../transformationsContext'
 import { transformPath } from '../transformTabs'
 import { useTransformTabs } from '../transformTabsContext'
 import type {
@@ -60,19 +59,11 @@ import type {
   SortSpec,
 } from '../types'
 import { filterChipLabels, filterIsActive, normalizeColumnFilter, normalizeFilterOp } from '../types'
+import { useWorkspaceTabs } from '../workspaceTabsContext'
+import type { WorkspaceOutletContext } from '../workspaceOutlet'
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 const DATA_FILTER_INFO_MAX = 5
-
-/** View-state fields that dirty a linked selection when changed. */
-const SELECTION_DIRTY_KEYS: ReadonlyArray<keyof OpenTab> = [
-  'filters',
-  'sort',
-  'hiddenColumns',
-  'columnOrder',
-  'columnWidths',
-  'limit',
-]
 
 function formatFilterInfoLabel(filter: ColumnFilter): string {
   const chips = filterChipLabels(filter)
@@ -110,13 +101,18 @@ export default function Explorer() {
     update: updateSelection,
     rename: renameSelection,
   } = useSelections()
-  const { transformations } = useTransformations()
-  const { openDraft, openSaved } = useTransformTabs()
+  const { openDraft } = useTransformTabs()
+  const { renameBrowseHandle } = useWorkspaceTabs()
+  const {
+    tabs,
+    setTabs,
+    updateTab,
+    upsertObject,
+  } = useBrowseTabs()
+  const { objectsCollapsed, toggleObjectsPanel } =
+    useOutletContext<WorkspaceOutletContext>()
   const urlObject = useSelectedFromUrl()
   const urlSelectionId = params.selectionId ?? null
-  const objectsPanelRef = usePanelRef()
-  const [objectsCollapsed, setObjectsCollapsed] = useState(false)
-  const [tabs, setTabs] = useState<OpenTab[]>([])
   const [columnsOpen, setColumnsOpen] = useState(false)
   const [hoverColumn, setHoverColumn] = useState<string | null>(null)
   const [gridSelection, setGridSelection] = useState<GridSelection | null>(
@@ -140,25 +136,20 @@ export default function Explorer() {
   const urlHasFiltersParam = searchParams.has('f')
   const isSelectionRoute = Boolean(urlSelectionId)
 
-  // Load tabs when connection changes
-  const prevConnectionId = useRef<string | undefined>(undefined)
+  // Clear scroll state when connection changes
   useEffect(() => {
-    const prev = prevConnectionId.current
-    prevConnectionId.current = active?.id
     scrollPosByTab.current.clear()
     if (scrollSaveTimer.current) {
       clearTimeout(scrollSaveTimer.current)
       scrollSaveTimer.current = null
     }
-    if (!active?.id) {
-      setTabs([])
-      return
+  }, [active?.id])
+
+  useEffect(() => {
+    return () => {
+      if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
     }
-    setTabs(loadTabs(active.id))
-    if (prev && prev !== active.id) {
-      navigate('/', { replace: true })
-    }
-  }, [active?.id, navigate])
+  }, [])
 
   // Seed live scroll map from persisted tab state (first time we see a key).
   useEffect(() => {
@@ -171,23 +162,11 @@ export default function Explorer() {
     }
   }, [tabs])
 
-  useEffect(() => {
-    return () => {
-      if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
-    }
-  }, [])
-
-  // Persist tabs
-  useEffect(() => {
-    if (!active?.id) return
-    saveTabs(active.id, tabs)
-  }, [active?.id, tabs])
-
   // URL object → ensure open as tab (browse routes only)
   useEffect(() => {
     if (!urlObject || !active?.id || isSelectionRoute) return
-    setTabs((prev) => upsertTab(prev, urlObject))
-  }, [urlObject, active?.id, isSelectionRoute])
+    upsertObject(urlObject)
+  }, [urlObject, active?.id, isSelectionRoute, upsertObject])
 
   // URL selection → ensure open as tab / redirect if missing
   useEffect(() => {
@@ -211,7 +190,7 @@ export default function Explorer() {
       }
       return prev
     })
-  }, [urlSelectionId, active?.id, selections, navigate])
+  }, [urlSelectionId, active?.id, selections, navigate, setTabs])
 
   // URL `f` → active tab filters (object routes only, when the param is present).
   useEffect(() => {
@@ -231,6 +210,7 @@ export default function Explorer() {
     urlHasFiltersParam,
     filtersSearchRaw,
     isSelectionRoute,
+    setTabs,
   ])
 
   // Active tab filters → URL (object browse only; selection tabs keep /s/:id).
@@ -266,20 +246,7 @@ export default function Explorer() {
 
   const updateActiveTab = (patch: Partial<OpenTab>) => {
     if (!activeKey) return
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.key !== activeKey) return t
-        const next: OpenTab = { ...t, ...patch }
-        if (
-          t.selectionId &&
-          patch.dirty === undefined &&
-          SELECTION_DIRTY_KEYS.some((k) => k in patch)
-        ) {
-          next.dirty = true
-        }
-        return next
-      }),
-    )
+    updateTab(activeKey, patch)
   }
 
   const onFiltersChange = (next: ColumnFilter[]) => {
@@ -291,87 +258,6 @@ export default function Explorer() {
 
   const onSortChange = (next: SortSpec | null) => {
     updateActiveTab({ sort: next, offset: 0 })
-  }
-
-  const saveSelectionTab = async (target: OpenTab): Promise<boolean> => {
-    if (!target.selectionId) return true
-    updateSelection(target.selectionId, {
-      name: target.selectionName ?? undefined,
-      object: target.object,
-      filters: target.filters,
-      sort: target.sort,
-      hiddenColumns: target.hiddenColumns,
-      columnOrder: target.columnOrder,
-      columnWidths: target.columnWidths,
-      limit: target.limit,
-    })
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.key === target.key ? { ...t, dirty: false } : t,
-      ),
-    )
-    return true
-  }
-
-  const closeTab = async (key: string) => {
-    const target = tabs.find((t) => t.key === key)
-    if (!target) return
-    if (target.selectionId && target.dirty) {
-      const label = target.selectionName ?? 'Selection'
-      const choice = await dialog.unsaved({
-        title: 'Unsaved changes',
-        message: `"${label}" has unsaved changes. Save before closing?`,
-      })
-      if (choice === 'cancel') return
-      if (choice === 'save') {
-        const saved = await saveSelectionTab(target)
-        if (!saved) return
-      }
-    }
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.key === key)
-      if (idx === -1) return prev
-      const next = prev.filter((t) => t.key !== key)
-      if (key === activeKey) {
-        const fallback = next[idx] ?? next[idx - 1] ?? null
-        navigate(fallback ? tabPath(fallback) : '/', { replace: true })
-      }
-      return next
-    })
-  }
-
-  const openSelection = (sel: SavedSelection) => {
-    const tab = makeSelectionTab(sel)
-    setTabs((prev) => {
-      const exists = prev.some((t) => t.key === tab.key)
-      if (exists) {
-        return prev.map((t) =>
-          t.key === tab.key
-            ? {
-                ...tab,
-                // Keep session dirty edits if re-opening the same selection tab.
-                ...(t.dirty
-                  ? {
-                      filters: t.filters,
-                      sort: t.sort,
-                      limit: t.limit,
-                      offset: t.offset,
-                      hiddenColumns: t.hiddenColumns,
-                      columnOrder: t.columnOrder,
-                      columnWidths: t.columnWidths,
-                      scrollTop: t.scrollTop,
-                      scrollLeft: t.scrollLeft,
-                      dirty: t.dirty,
-                      selectionName: sel.name,
-                    }
-                  : { selectionName: sel.name }),
-              }
-            : t,
-        )
-      }
-      return [...prev, tab]
-    })
-    navigate(selectionPath(sel.id))
   }
 
   const saveCurrentSelection = async () => {
@@ -389,7 +275,7 @@ export default function Explorer() {
         columnWidths,
         limit,
       })
-      updateActiveTab({ dirty: false })
+      updateTab(activeKey, { dirty: false })
       return
     }
 
@@ -426,6 +312,7 @@ export default function Explorer() {
           : t,
       ),
     )
+    renameBrowseHandle(activeKey, newKey)
     navigate(selectionPath(created.id))
   }
 
@@ -448,25 +335,6 @@ export default function Explorer() {
     if (!selected) return
     const tab = openDraft(selected)
     if (tab) navigate(transformPath(tab.id))
-  }
-
-  const openTransformation = (savedId: string) => {
-    const saved = transformations.find((t) => t.id === savedId)
-    if (!saved) return
-    const tab = openSaved(saved)
-    if (tab) navigate(transformPath(tab.id), { state: { autoRun: true } })
-  }
-
-  const syncObjectsCollapsed = () => {
-    setObjectsCollapsed(objectsPanelRef.current?.isCollapsed() ?? false)
-  }
-
-  const toggleObjectsPanel = () => {
-    const panel = objectsPanelRef.current
-    if (!panel) return
-    if (panel.isCollapsed()) panel.expand()
-    else panel.collapse()
-    syncObjectsCollapsed()
   }
 
   useEffect(() => {
@@ -538,7 +406,6 @@ export default function Explorer() {
     enabled: Boolean(active && selected),
     staleTime: PREVIEW_STALE_MS,
     gcTime: queryGcTime(PREVIEW_STALE_MS),
-    // Keep prior rows only when paging/filtering the same table — not when switching objects.
     placeholderData: (previousData, previousQuery) => {
       const prevKey = previousQuery?.queryKey
       if (
@@ -579,13 +446,7 @@ export default function Explorer() {
     if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
     const key = activeKey
     scrollSaveTimer.current = setTimeout(() => {
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.key === key
-            ? { ...t, scrollTop: pos.top, scrollLeft: pos.left }
-            : t,
-        ),
-      )
+      updateTab(key, { scrollTop: pos.top, scrollLeft: pos.left })
     }, 150)
   }
 
@@ -628,364 +489,336 @@ export default function Explorer() {
   const bookmarkDisabled = isLinkedSelection && !selectionDirty
 
   return (
-    <Group orientation="horizontal" style={{ height: '100%', width: '100%' }}>
-      <Panel
-        id="objects"
-        panelRef={objectsPanelRef}
-        defaultSize={280}
-        minSize={160}
-        collapsible
-        collapsedSize={0}
-        onResize={syncObjectsCollapsed}
-      >
-        <ObjectsPanel
-          connection={active}
-          mode="browse"
-          selected={selected}
-          activeSelectionId={linkedSelectionId}
-          onOpenSelection={openSelection}
-          onOpenTransformation={openTransformation}
-          onCollapse={toggleObjectsPanel}
-        />
-      </Panel>
-      <Separator disabled={objectsCollapsed} />
-      <Panel id="data" minSize={200}>
-        <div className="panel">
-          <div className="panel-header">
-            {objectsCollapsed ? (
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={toggleObjectsPanel}
-                title="Expand objects panel"
-                aria-label="Expand objects panel"
-              >
-                <SidebarToggleIcon collapsed />
-              </button>
-            ) : null}
-            <span className="panel-title">Data</span>
-            {isLinkedSelection ? (
-              <button
-                type="button"
-                className="sel-name-btn"
-                onDoubleClick={() => void onRenameActiveSelection()}
-                title={`${objectTitle(selected!)}\nDouble-click to rename`}
-              >
-                {selectionName}
-                {selectionDirty ? ' •' : ''}
-              </button>
-            ) : null}
-            {selected ? (
-              <span
-                className={`data-fqn${isLinkedSelection ? ' data-fqn-secondary' : ''}`}
-                title={objectTitle(selected)}
-              >
-                {objectTitle(selected)}
+    <div className="panel">
+      <div className="panel-header">
+        {objectsCollapsed ? (
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={toggleObjectsPanel}
+            title="Expand objects panel"
+            aria-label="Expand objects panel"
+          >
+            <SidebarToggleIcon collapsed />
+          </button>
+        ) : null}
+        <span className="panel-title">Data</span>
+        {isLinkedSelection ? (
+          <button
+            type="button"
+            className="sel-name-btn"
+            onDoubleClick={() => void onRenameActiveSelection()}
+            title={`${objectTitle(selected!)}\nDouble-click to rename`}
+          >
+            {selectionName}
+            {selectionDirty ? ' •' : ''}
+          </button>
+        ) : null}
+        {selected ? (
+          <span
+            className={`data-fqn${isLinkedSelection ? ' data-fqn-secondary' : ''}`}
+            title={objectTitle(selected)}
+          >
+            {objectTitle(selected)}
+          </span>
+        ) : null}
+        {selectedFavorite ? (
+          <button
+            type="button"
+            className={`btn-micro btn-icon tree-fav${selectedIsFavorite ? ' on' : ''}`}
+            title={
+              selectedIsFavorite ? 'Remove favorite' : 'Add favorite'
+            }
+            aria-label={
+              selectedIsFavorite ? 'Remove favorite' : 'Add favorite'
+            }
+            onClick={() => toggleFavorite(selectedFavorite)}
+          >
+            <StarIcon filled={selectedIsFavorite} />
+          </button>
+        ) : null}
+        {selected ? (
+          <span className="kind-badge">{selected.kind}</span>
+        ) : null}
+        {isLinkedSelection ? (
+          <span className="kind-badge">selection</span>
+        ) : null}
+        {visibleFilters.length > 0 ? (
+          <div
+            className="data-filter-info"
+            title={activeFilters
+              .map(
+                (f) => `${f.column}: ${formatFilterInfoLabel(f)}`,
+              )
+              .join('\n')}
+          >
+            {visibleFilters.map((f) => {
+              const label = formatFilterInfoLabel(f)
+              return (
+                <span
+                  key={`${f.column}\0${normalizeFilterOp(f.op)}\0${label}`}
+                  className="data-filter-chip"
+                  title={`${f.column}: ${label}`}
+                >
+                  <span className="data-filter-col">{f.column}</span>
+                  <span className="data-filter-val">{label}</span>
+                </span>
+              )
+            })}
+            {hiddenFilterCount > 0 ? (
+              <span className="data-filter-more">
+                +{hiddenFilterCount}
               </span>
             ) : null}
-            {selectedFavorite ? (
+          </div>
+        ) : null}
+        {filterCount > 0 ? (
+          <button
+            type="button"
+            className="btn-micro"
+            title="Clear all filters"
+            onClick={() => onFiltersChange([])}
+          >
+            Clear
+          </button>
+        ) : null}
+        <div className="panel-header-actions">
+          {selected && preview.isFetching ? <Spinner size="sm" /> : null}
+          {selected ? (
+            <button
+              type="button"
+              className="btn-micro btn-icon"
+              onClick={newTransform}
+              title="New transformation"
+              aria-label="New transformation"
+            >
+              <TransformIcon />
+            </button>
+          ) : null}
+          {selected ? (
+            <button
+              type="button"
+              className={`btn-micro btn-icon${
+                isLinkedSelection
+                  ? selectionDirty
+                    ? ' open'
+                    : ''
+                  : ''
+              }`}
+              onClick={() => void saveCurrentSelection()}
+              disabled={bookmarkDisabled}
+              title={bookmarkTitle}
+              aria-label={bookmarkTitle}
+            >
+              <BookmarkIcon
+                filled={isLinkedSelection && !selectionDirty}
+              />
+            </button>
+          ) : null}
+          {preview.data && selected ? (
+            <div className="column-picker-anchor">
               <button
                 type="button"
-                className={`btn-micro btn-icon tree-fav${selectedIsFavorite ? ' on' : ''}`}
-                title={
-                  selectedIsFavorite ? 'Remove favorite' : 'Add favorite'
-                }
-                aria-label={
-                  selectedIsFavorite ? 'Remove favorite' : 'Add favorite'
-                }
-                onClick={() => toggleFavorite(selectedFavorite)}
+                className={`btn-micro btn-icon${columnsOpen ? ' open' : ''}${hiddenColumns.length > 0 ? ' active' : ''}`}
+                onClick={() => setColumnsOpen((v) => !v)}
+                title="Show / hide columns"
+                aria-label="Show or hide columns"
+                aria-expanded={columnsOpen}
               >
-                <StarIcon filled={selectedIsFavorite} />
+                <ColumnsIcon />
               </button>
-            ) : null}
-            {selected ? (
-              <span className="kind-badge">{selected.kind}</span>
-            ) : null}
-            {isLinkedSelection ? (
-              <span className="kind-badge">selection</span>
-            ) : null}
-            {visibleFilters.length > 0 ? (
-              <div
-                className="data-filter-info"
-                title={activeFilters
-                  .map(
-                    (f) => `${f.column}: ${formatFilterInfoLabel(f)}`,
-                  )
-                  .join('\n')}
-              >
-                {visibleFilters.map((f) => {
-                  const label = formatFilterInfoLabel(f)
-                  return (
-                    <span
-                      key={`${f.column}\0${normalizeFilterOp(f.op)}\0${label}`}
-                      className="data-filter-chip"
-                      title={`${f.column}: ${label}`}
-                    >
-                      <span className="data-filter-col">{f.column}</span>
-                      <span className="data-filter-val">{label}</span>
-                    </span>
-                  )
-                })}
-                {hiddenFilterCount > 0 ? (
-                  <span className="data-filter-more">
-                    +{hiddenFilterCount}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-            {filterCount > 0 ? (
-              <button
-                type="button"
-                className="btn-micro"
-                title="Clear all filters"
-                onClick={() => onFiltersChange([])}
-              >
-                Clear
-              </button>
-            ) : null}
-            <div className="panel-header-actions">
-              {selected && preview.isFetching ? <Spinner size="sm" /> : null}
-              {selected ? (
-                <button
-                  type="button"
-                  className="btn-micro btn-icon"
-                  onClick={newTransform}
-                  title="New transformation"
-                  aria-label="New transformation"
-                >
-                  <TransformIcon />
-                </button>
+              {columnsOpen ? (
+                <ColumnPicker
+                  columns={preview.data.columns}
+                  hiddenColumns={hiddenColumns}
+                  columnOrder={columnOrder}
+                  onChange={(hidden) =>
+                    updateActiveTab({ hiddenColumns: hidden })
+                  }
+                  onClose={() => setColumnsOpen(false)}
+                  onHoverColumn={setHoverColumn}
+                />
               ) : null}
-              {selected ? (
-                <button
-                  type="button"
-                  className={`btn-micro btn-icon${
-                    isLinkedSelection
-                      ? selectionDirty
-                        ? ' open'
-                        : ''
-                      : ''
-                  }`}
-                  onClick={() => void saveCurrentSelection()}
-                  disabled={bookmarkDisabled}
-                  title={bookmarkTitle}
-                  aria-label={bookmarkTitle}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="btn-micro btn-icon"
+            onClick={() => void preview.refetch()}
+            disabled={!selected || preview.isFetching}
+            title="Refresh preview"
+            aria-label="Refresh preview"
+          >
+            <RefreshIcon />
+          </button>
+        </div>
+      </div>
+
+      {!active ? (
+        <div className="panel-body">
+          <div className="empty-hint">
+            Add a connection to browse Snowflake
+          </div>
+        </div>
+      ) : !selected ? (
+        <div className="panel-body">
+          <div className="empty-hint">
+            {tabs.length > 0
+              ? 'Select a tab or open a table from the tree'
+              : 'Select a table or view'}
+          </div>
+        </div>
+      ) : (
+        <>
+          {preview.isError ? (
+            <div className="error-bar">
+              {preview.error instanceof Error
+                ? preview.error.message
+                : 'Failed to load preview'}
+            </div>
+          ) : null}
+          <Group
+            orientation="horizontal"
+            style={{ flex: 1, minHeight: 0, width: '100%' }}
+          >
+            <Panel id="grid" minSize={200}>
+              <div className="panel data-grid-panel">
+                <div
+                  className="panel-body"
+                  ref={gridScrollRef}
+                  onScroll={onGridScroll}
                 >
-                  <BookmarkIcon
-                    filled={isLinkedSelection && !selectionDirty}
-                  />
-                </button>
-              ) : null}
-              {preview.data && selected ? (
-                <div className="column-picker-anchor">
-                  <button
-                    type="button"
-                    className={`btn-micro btn-icon${columnsOpen ? ' open' : ''}${hiddenColumns.length > 0 ? ' active' : ''}`}
-                    onClick={() => setColumnsOpen((v) => !v)}
-                    title="Show / hide columns"
-                    aria-label="Show or hide columns"
-                    aria-expanded={columnsOpen}
-                  >
-                    <ColumnsIcon />
-                  </button>
-                  {columnsOpen ? (
-                    <ColumnPicker
-                      columns={preview.data.columns}
+                  {preview.isLoading && !preview.data ? (
+                    <div className="empty-hint">
+                      <Spinner size="md" label="Loading rows…" block />
+                    </div>
+                  ) : preview.data ? (
+                    <DataGrid
+                      data={preview.data}
+                      connection={active}
+                      database={selected.database}
+                      schema={selected.schema}
+                      table={selected.name}
+                      filters={filters}
+                      onFiltersChange={onFiltersChange}
+                      sort={sort}
+                      onSortChange={onSortChange}
                       hiddenColumns={hiddenColumns}
                       columnOrder={columnOrder}
-                      onChange={(hidden) =>
-                        updateActiveTab({ hiddenColumns: hidden })
+                      onColumnOrderChange={(order) =>
+                        updateActiveTab({ columnOrder: order })
                       }
-                      onClose={() => setColumnsOpen(false)}
-                      onHoverColumn={setHoverColumn}
+                      columnWidths={columnWidths}
+                      onColumnWidthsChange={(widths) =>
+                        updateActiveTab({ columnWidths: widths })
+                      }
+                      highlightColumn={hoverColumn}
+                      selection={gridSelection}
+                      onSelectionChange={onGridSelectionChange}
+                      rowOffset={offset + 1}
                     />
                   ) : null}
                 </div>
-              ) : null}
-              <button
-                type="button"
-                className="btn-micro btn-icon"
-                onClick={() => void preview.refetch()}
-                disabled={!selected || preview.isFetching}
-                title="Refresh preview"
-                aria-label="Refresh preview"
-              >
-                <RefreshIcon />
-              </button>
-            </div>
-          </div>
-
-          {active && tabs.length > 0 ? (
-            <TabBar tabs={tabs} activeKey={activeKey} onClose={closeTab} />
-          ) : null}
-
-          {!active ? (
-            <div className="panel-body">
-              <div className="empty-hint">
-                Add a connection to browse Snowflake
-              </div>
-            </div>
-          ) : !selected ? (
-            <div className="panel-body">
-              <div className="empty-hint">
-                {tabs.length > 0
-                  ? 'Select a tab or open a table from the tree'
-                  : 'Select a table or view'}
-              </div>
-            </div>
-          ) : (
-            <>
-              {preview.isError ? (
-                <div className="error-bar">
-                  {preview.error instanceof Error
-                    ? preview.error.message
-                    : 'Failed to load preview'}
-                </div>
-              ) : null}
-              <Group
-                orientation="horizontal"
-                style={{ flex: 1, minHeight: 0, width: '100%' }}
-              >
-                <Panel id="grid" minSize={200}>
-                  <div className="panel data-grid-panel">
-                    <div
-                      className="panel-body"
-                      ref={gridScrollRef}
-                      onScroll={onGridScroll}
-                    >
-                      {preview.isLoading && !preview.data ? (
-                        <div className="empty-hint">
-                          <Spinner size="md" label="Loading rows…" block />
-                        </div>
-                      ) : preview.data ? (
-                        <DataGrid
-                          data={preview.data}
-                          connection={active}
-                          database={selected.database}
-                          schema={selected.schema}
-                          table={selected.name}
-                          filters={filters}
-                          onFiltersChange={onFiltersChange}
-                          sort={sort}
-                          onSortChange={onSortChange}
-                          hiddenColumns={hiddenColumns}
-                          columnOrder={columnOrder}
-                          onColumnOrderChange={(order) =>
-                            updateActiveTab({ columnOrder: order })
-                          }
-                          columnWidths={columnWidths}
-                          onColumnWidthsChange={(widths) =>
-                            updateActiveTab({ columnWidths: widths })
-                          }
-                          highlightColumn={hoverColumn}
-                          selection={gridSelection}
-                          onSelectionChange={onGridSelectionChange}
-                          rowOffset={offset + 1}
-                        />
-                      ) : null}
-                    </div>
-                    <div className="pager">
-                      <span className="pager-meta">
-                        {preview.isFetching ? <Spinner size="sm" /> : null}
-                        <span>
-                          Rows {from.toLocaleString()}–{to.toLocaleString()} of{' '}
-                          <span className="pager-total">{totalLabel}</span>
-                          {filters.length > 0 ? ' (filtered)' : ''}
-                        </span>
-                      </span>
-                      <div className="toolbar">
-                        <button
-                          type="button"
-                          className="btn-micro"
-                          disabled={!canPrev || preview.isFetching}
-                          onClick={() =>
-                            updateActiveTab({
-                              offset: Math.max(0, offset - limit),
-                            })
-                          }
-                        >
-                          ◀
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-micro"
-                          disabled={!canNext || preview.isFetching}
-                          onClick={() =>
-                            updateActiveTab({ offset: offset + limit })
-                          }
-                        >
-                          ▶
-                        </button>
-                        <select
-                          className="select"
-                          value={limit}
-                          onChange={(e) => {
-                            const nextLimit = Number(e.target.value)
-                            setDefaultPageSize(nextLimit)
-                            updateActiveTab({
-                              limit: nextLimit,
-                              offset: 0,
-                            })
-                          }}
-                        >
-                          {pageSizeOptions.map((size) => (
-                            <option key={size} value={size}>
-                              {size}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                </Panel>
-                <Separator />
-                <Panel
-                  id="inspector"
-                  panelRef={inspectorPanelRef}
-                  defaultSize={0}
-                  minSize={220}
-                  collapsible
-                  collapsedSize={0}
-                  onResize={() => {
-                    setInspectorOpen(
-                      !(inspectorPanelRef.current?.isCollapsed() ?? true),
-                    )
-                  }}
-                >
-                  {preview.data ? (
-                    <DetailInspector
-                      data={preview.data}
-                      selection={gridSelection}
-                      rowNumber={
-                        gridSelection
-                          ? offset + 1 + gridSelection.rowIndex
-                          : null
+                <div className="pager">
+                  <span className="pager-meta">
+                    {preview.isFetching ? <Spinner size="sm" /> : null}
+                    <span>
+                      Rows {from.toLocaleString()}–{to.toLocaleString()} of{' '}
+                      <span className="pager-total">{totalLabel}</span>
+                      {filters.length > 0 ? ' (filtered)' : ''}
+                    </span>
+                  </span>
+                  <div className="toolbar">
+                    <button
+                      type="button"
+                      className="btn-micro"
+                      disabled={!canPrev || preview.isFetching}
+                      onClick={() =>
+                        updateActiveTab({
+                          offset: Math.max(0, offset - limit),
+                        })
                       }
-                      onSelectColumn={(column) => {
-                        if (!gridSelection) return
-                        onGridSelectionChange({
-                          ...gridSelection,
-                          column,
+                    >
+                      ◀
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-micro"
+                      disabled={!canNext || preview.isFetching}
+                      onClick={() =>
+                        updateActiveTab({ offset: offset + limit })
+                      }
+                    >
+                      ▶
+                    </button>
+                    <select
+                      className="select"
+                      value={limit}
+                      onChange={(e) => {
+                        const nextLimit = Number(e.target.value)
+                        setDefaultPageSize(nextLimit)
+                        updateActiveTab({
+                          limit: nextLimit,
+                          offset: 0,
                         })
                       }}
-                      onClose={closeInspector}
-                    />
-                  ) : (
-                    <div className="panel">
-                      <div className="panel-header">
-                        <span className="panel-title">Inspector</span>
-                      </div>
-                      <div className="panel-body">
-                        <div className="empty-hint">No data</div>
-                      </div>
-                    </div>
-                  )}
-                </Panel>
-              </Group>
-            </>
-          )}
-        </div>
-      </Panel>
-    </Group>
+                    >
+                      {pageSizeOptions.map((size) => (
+                        <option key={size} value={size}>
+                          {size}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+            <Separator />
+            <Panel
+              id="inspector"
+              panelRef={inspectorPanelRef}
+              defaultSize={0}
+              minSize={220}
+              collapsible
+              collapsedSize={0}
+              onResize={() => {
+                setInspectorOpen(
+                  !(inspectorPanelRef.current?.isCollapsed() ?? true),
+                )
+              }}
+            >
+              {preview.data ? (
+                <DetailInspector
+                  data={preview.data}
+                  selection={gridSelection}
+                  rowNumber={
+                    gridSelection
+                      ? offset + 1 + gridSelection.rowIndex
+                      : null
+                  }
+                  onSelectColumn={(column) => {
+                    if (!gridSelection) return
+                    onGridSelectionChange({
+                      ...gridSelection,
+                      column,
+                    })
+                  }}
+                  onClose={closeInspector}
+                />
+              ) : (
+                <div className="panel">
+                  <div className="panel-header">
+                    <span className="panel-title">Inspector</span>
+                  </div>
+                  <div className="panel-body">
+                    <div className="empty-hint">No data</div>
+                  </div>
+                </div>
+              )}
+            </Panel>
+          </Group>
+        </>
+      )}
+    </div>
   )
 }

@@ -352,6 +352,25 @@ body,
   flex-shrink: 0;
 }
 
+.workspace-main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.workspace-outlet {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-outlet > .panel {
+  flex: 1;
+  min-height: 0;
+}
+
 .tab-bar {
   display: flex;
   align-items: stretch;

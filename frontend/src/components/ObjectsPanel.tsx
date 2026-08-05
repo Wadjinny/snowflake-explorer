@@ -1,8 +1,6 @@
 import { useIsFetching, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router'
 import { invalidateCatalog } from '../api/snowflake'
 import type { SavedSelection } from '../selections'
-import { TRANSFORM_HOME } from '../transformTabs'
 import type { Connection, SelectedObject } from '../types'
 import ObjectTree from './ObjectTree'
 import Spinner from './Spinner'
@@ -11,8 +9,6 @@ import { RefreshIcon, SidebarToggleIcon } from './TreeIcons'
 type Props = {
   /** Active connection, or null when none is configured. */
   connection: Connection | null
-  /** Which workspace is showing this panel (drives the Browse/Transform nav). */
-  mode: 'browse' | 'transform'
   selected: SelectedObject | null
   activeSelectionId?: string | null
   onOpenSelection: (selection: SavedSelection) => void
@@ -22,10 +18,9 @@ type Props = {
   onCollapse: () => void
 }
 
-/** The Objects sidebar body, shared by the Browse and Transform workspaces. */
+/** The Objects sidebar body for the shared workspace shell. */
 export default function ObjectsPanel({
   connection,
-  mode,
   selected,
   activeSelectionId = null,
   onOpenSelection,
@@ -72,20 +67,6 @@ export default function ObjectsPanel({
       <div className="panel-header">
         <span className="panel-title">Objects</span>
         <div className="panel-header-actions">
-          {mode === 'browse' ? (
-            <span className="btn-micro open">Browse</span>
-          ) : (
-            <Link to="/" className="btn-micro">
-              Browse
-            </Link>
-          )}
-          {mode === 'transform' ? (
-            <span className="btn-micro open">Transform</span>
-          ) : (
-            <Link to={TRANSFORM_HOME} className="btn-micro" title="Transform mode">
-              Transform
-            </Link>
-          )}
           {connection && treeFetching > 0 ? <Spinner size="sm" /> : null}
           {connection ? (
             <button

@@ -7,6 +7,7 @@ import { ConnectionsProvider } from './connections.tsx'
 import { DialogProvider } from './dialog.tsx'
 import { FavoritesProvider } from './favoritesContext.tsx'
 import { SelectionsProvider } from './selectionsContext.tsx'
+import { BrowseTabsProvider } from './browseTabsContext.tsx'
 import { TransformationsProvider } from './transformationsContext.tsx'
 import { TransformTabsProvider } from './transformTabsContext.tsx'
 import { router } from './router.tsx'
@@ -28,9 +29,11 @@ createRoot(document.getElementById('root')!).render(
           <SelectionsProvider>
             <TransformationsProvider>
               <TransformTabsProvider>
-                <QueryClientProvider client={queryClient}>
-                  <RouterProvider router={router} />
-                </QueryClientProvider>
+                <BrowseTabsProvider>
+                  <QueryClientProvider client={queryClient}>
+                    <RouterProvider router={router} />
+                  </QueryClientProvider>
+                </BrowseTabsProvider>
               </TransformTabsProvider>
             </TransformationsProvider>
           </SelectionsProvider>
