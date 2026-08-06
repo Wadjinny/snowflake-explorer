@@ -144,6 +144,17 @@ def _preview_select_sql(
     return f"{keyword} {', '.join(parts)} FROM {table}"
 
 
+def _clean_select_sql(
+    table: str, columns: list[ColumnMeta], *, distinct: bool = False
+) -> str:
+    """Copyable SELECT with bare column idents (no preview truncation stubs)."""
+    parts = [quote_ident(c.name) for c in columns]
+    keyword = "SELECT DISTINCT" if distinct else "SELECT"
+    if not parts:
+        return f"{keyword} * FROM {table}"
+    return f"{keyword} {', '.join(parts)} FROM {table}"
+
+
 def _approx_count_sql(table: str, where: str) -> str:
     """1% Bernoulli sample, extrapolated. Cheap relative to full COUNT on AU."""
     return (
@@ -287,6 +298,14 @@ def _run_preview(
         f"{order} "
         "LIMIT %(limit)s OFFSET %(offset)s"
     )
+    # Clean copyable SQL (same filters/order/limit; bare columns, no stubs).
+    # Browse may further project/reorder the SELECT list client-side.
+    display_sql = (
+        f"{_clean_select_sql(table, project, distinct=body.distinct)}"
+        f"{where}"
+        f"{order} "
+        f"LIMIT {int(body.limit)} OFFSET {int(body.offset)}"
+    )
 
     heavy = is_account_usage(db, schema)
     # Filtered / DISTINCT exact COUNT on Account Usage is multi-second;
@@ -326,6 +345,7 @@ def _run_preview(
         rows=[[_serialize_cell(cell) for cell in row] for row in rows],
         total=total,
         schemaColumns=schema_columns,
+        sql=display_sql,
     )
 
 

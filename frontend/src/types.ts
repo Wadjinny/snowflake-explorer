@@ -84,6 +84,8 @@ export type PreviewResult = {
   total: number
   /** Full table schema when `columns` is a distinct projection subset. */
   schemaColumns?: ColumnInfo[] | null
+  /** Copyable SELECT for current filters / sort / limit. */
+  sql?: string
 }
 
 export type SelectedObject = {

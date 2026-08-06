@@ -54,6 +54,8 @@ class PreviewResult(BaseModel):
     total: int
     # Full table schema when `columns` is a projected subset (distinct + column pick).
     schemaColumns: list[ColumnInfo] | None = None
+    # Copyable SELECT for the current filters / sort / limit (clean column list).
+    sql: str = ""
 
 
 FacetableType = Literal["string", "number", "boolean", "date", "timestamp"]

@@ -15,15 +15,18 @@ import DetailInspector, {
   type GridSelection,
 } from '../components/DetailInspector'
 import Spinner from '../components/Spinner'
+import SqlPreviewModal from '../components/SqlPreviewModal'
 import {
   BookmarkIcon,
   ColumnsIcon,
   DistinctIcon,
   RefreshIcon,
   SidebarToggleIcon,
+  SqlIcon,
   StarIcon,
   TransformIcon,
 } from '../components/TreeIcons'
+import { projectPreviewSql } from '../previewSql'
 import { PREVIEW_STALE_MS, queryGcTime } from '../queryStale'
 import { useBrowseTabs } from '../browseTabsContext'
 import { useConnections } from '../connections'
@@ -117,6 +120,7 @@ export default function Explorer() {
   const urlObject = useSelectedFromUrl()
   const urlSelectionId = params.selectionId ?? null
   const [columnsOpen, setColumnsOpen] = useState(false)
+  const [showSql, setShowSql] = useState(false)
   const [hoverColumn, setHoverColumn] = useState<string | null>(null)
   const [gridSelection, setGridSelection] = useState<GridSelection | null>(
     null,
@@ -548,6 +552,27 @@ export default function Explorer() {
     preview.data?.schemaColumns ?? preview.data?.columns ?? []
   const colCount = schemaCols.length
   const visibleColCount = Math.max(0, colCount - hiddenColumns.length)
+  const displaySql = useMemo(() => {
+    const base = preview.data?.sql?.trim() ?? ''
+    if (!base) return ''
+    // Distinct preview already projects hidden columns server-side.
+    const columns = distinct
+      ? (preview.data?.columns ?? []).map((c) => c.name)
+      : schemaCols.map((c) => c.name)
+    return projectPreviewSql(
+      base,
+      columns,
+      distinct ? [] : hiddenColumns,
+      columnOrder,
+    )
+  }, [
+    preview.data?.sql,
+    preview.data?.columns,
+    schemaCols,
+    distinct,
+    hiddenColumns,
+    columnOrder,
+  ])
   const canPrev = offset > 0
   const canNext = total < 0 ? rowCount >= limit : offset + rowCount < total
   const pageSizeOptions = PAGE_SIZES.includes(limit)
@@ -762,6 +787,16 @@ export default function Explorer() {
           ) : null}
           <button
             type="button"
+            className={`btn-micro btn-icon${showSql ? ' open' : ''}`}
+            onClick={() => setShowSql(true)}
+            disabled={!displaySql}
+            title="Show SQL"
+            aria-label="Show SQL"
+          >
+            <SqlIcon />
+          </button>
+          <button
+            type="button"
             className="btn-micro btn-icon"
             onClick={() => void preview.refetch()}
             disabled={!selected || preview.isFetching}
@@ -772,6 +807,15 @@ export default function Explorer() {
           </button>
         </div>
       </div>
+
+      {showSql && displaySql ? (
+        <SqlPreviewModal
+          open={showSql}
+          sql={displaySql}
+          onClose={() => setShowSql(false)}
+          title="Preview SQL"
+        />
+      ) : null}
 
       {!active ? (
         <div className="panel-body">
