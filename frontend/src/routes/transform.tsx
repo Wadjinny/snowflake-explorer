@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router'
 import { Group, Panel, Separator, useGroupRef, usePanelRef } from 'react-resizable-panels'
 import type { Layout } from 'react-resizable-panels'
@@ -13,7 +13,6 @@ import DetailInspector, {
 } from '../components/DetailInspector'
 import ResultTable from '../components/ResultTable'
 import Spinner from '../components/Spinner'
-import SqlPreviewModal from '../components/SqlPreviewModal'
 import TransformBuilder, {
   type TransformCollapseApi,
 } from '../components/TransformBuilder'
@@ -48,6 +47,10 @@ import { getDefaultPageSize, setDefaultPageSize } from '../pageSizePrefs'
 import { transformHandle } from '../workspaceTabs'
 import { useWorkspaceTabs } from '../workspaceTabsContext'
 import type { WorkspaceOutletContext } from '../workspaceOutlet'
+
+const SqlPreviewModal = lazy(
+  () => import('../components/SqlPreviewModal'),
+)
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 
@@ -526,12 +529,14 @@ export default function TransformWorkspace() {
       ) : null}
 
       {showSql && result ? (
-        <SqlPreviewModal
-          open={showSql}
-          sql={result.sql}
-          onClose={() => setShowSql(false)}
-          title="Compiled SQL"
-        />
+        <Suspense fallback={null}>
+          <SqlPreviewModal
+            open={showSql}
+            sql={result.sql}
+            onClose={() => setShowSql(false)}
+            title="Compiled SQL"
+          />
+        </Suspense>
       ) : null}
 
       <Group

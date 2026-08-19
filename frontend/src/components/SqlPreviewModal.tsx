@@ -1,4 +1,5 @@
 import Editor from '@monaco-editor/react'
+import '../monacoSetup'
 import { useEffect, useId, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { format as formatSql } from 'sql-formatter'
