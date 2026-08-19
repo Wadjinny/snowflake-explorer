@@ -40,7 +40,9 @@ Snowflake credentials are managed in the UI (Manage), not via server env vars.
 - The frontend sends the active connection on each request via the `X-Snowflake-Connection` header (base64url JSON). The backend does not persist credentials.
 - The backend reuses Snowflake sessions in memory, keyed by a hash of the credentials, for **2 hours** (then reconnects).
 
-Passwords in `localStorage` are convenient for a personal tool but are visible to any XSS on the origin.
+Passwords in `localStorage` are convenient for a personal tool but are visible to any XSS on
+the origin. The site sends a CSP (`script-src 'self'`) and bundles every script, including
+the Monaco editor, so no third-party code runs on that origin.
 
 ## What's included
 
@@ -52,3 +54,29 @@ Passwords in `localStorage` are convenient for a personal tool but are visible t
 ## Deploy
 
 Push to `main` runs the deploy workflow: build/push the backend image, deploy over SSH, build the Vite frontend, and install the site Caddyfile.
+
+### Access control
+
+The site (static assets **and** `/api/*`) sits behind Caddy basic auth as user `ilyas`, so
+the backend cannot be used as an anonymous Snowflake login relay. The password hash comes
+from `SF_EXPLORER_AUTH_HASH` on the host; the fallback baked into the `Caddyfile` hashes a
+discarded random password, so a missing env var locks the site instead of publishing it.
+
+Set it up on the host **before** the next deploy installs the new Caddyfile:
+
+```bash
+caddy hash-password                      # prompts, prints a $2a$... hash
+sudo install -m 600 /dev/null /etc/caddy/site.env
+sudo tee /etc/caddy/site.env <<'EOF'
+SF_EXPLORER_AUTH_HASH=<paste the hash>
+EOF
+sudo mkdir -p /etc/systemd/system/caddy.service.d
+sudo tee /etc/systemd/system/caddy.service.d/env.conf <<'EOF'
+[Service]
+EnvironmentFile=/etc/caddy/site.env
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart caddy
+```
+
+The backend container publishes on `127.0.0.1:1235` only, so the API is reachable through
+Caddy alone and never over plain HTTP from off-host.

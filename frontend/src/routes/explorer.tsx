@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   useNavigate,
   useOutletContext,
@@ -15,7 +15,6 @@ import DetailInspector, {
   type GridSelection,
 } from '../components/DetailInspector'
 import Spinner from '../components/Spinner'
-import SqlPreviewModal from '../components/SqlPreviewModal'
 import {
   BookmarkIcon,
   ColumnsIcon,
@@ -66,6 +65,10 @@ import type {
 import { filterChipLabels, filterIsActive, normalizeColumnFilter, normalizeFilterOp } from '../types'
 import { useWorkspaceTabs } from '../workspaceTabsContext'
 import type { WorkspaceOutletContext } from '../workspaceOutlet'
+
+const SqlPreviewModal = lazy(
+  () => import('../components/SqlPreviewModal'),
+)
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 const DATA_FILTER_INFO_MAX = 5
@@ -809,12 +812,14 @@ export default function Explorer() {
       </div>
 
       {showSql && displaySql ? (
-        <SqlPreviewModal
-          open={showSql}
-          sql={displaySql}
-          onClose={() => setShowSql(false)}
-          title="Preview SQL"
-        />
+        <Suspense fallback={null}>
+          <SqlPreviewModal
+            open={showSql}
+            sql={displaySql}
+            onClose={() => setShowSql(false)}
+            title="Preview SQL"
+          />
+        </Suspense>
       ) : null}
 
       {!active ? (

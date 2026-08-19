@@ -229,6 +229,32 @@ def relative_predicate(expr: str, op: str, col_type: str) -> str:
     return f"({expr} >= {start} AND {expr} < {end})"
 
 
+def sql_string_literal(text: str) -> str:
+    """Quote *text* as a Snowflake string literal.
+
+    Snowflake honours backslash escapes inside single-quoted literals, so a
+    bare backslash must be doubled too: escaping only quotes would let a
+    trailing ``\\`` swallow the closing quote and break out into SQL.
+    """
+    escaped = text.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"
+
+
+# Snowflake tops out at NUMBER(38,37), so a plain-digit literal never needs
+# more than ~40 characters. Rendering an unbounded exponent instead is a
+# memory-exhaustion lever: format(Decimal("1E+900000000"), "f") is ~900 MB.
+_MAX_NUMBER_LITERAL_CHARS = 64
+
+
+def _plain_digit_width(d: Decimal) -> int:
+    """Width of ``format(d, "f")`` without building the (possibly huge) string."""
+    _sign, digits, exponent = d.as_tuple()
+    exp = int(exponent)
+    if exp >= 0:
+        return len(digits) + exp
+    return max(len(digits), -exp) + 1
+
+
 def sql_value_literal(value: object, col_type: str) -> str:
     if col_type == "number":
         try:
@@ -237,6 +263,19 @@ def sql_value_literal(value: object, col_type: str) -> str:
             raise HTTPException(
                 status_code=400, detail=f"Invalid number filter value: {value!r}"
             ) from exc
+        if not d.is_finite():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid number filter value: {value!r}",
+            )
+        if _plain_digit_width(d) > _MAX_NUMBER_LITERAL_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Number filter value out of range "
+                    f"(over {_MAX_NUMBER_LITERAL_CHARS} digits): {value!r}"
+                ),
+            )
         return format(d, "f")
 
     if col_type == "boolean":
@@ -262,16 +301,19 @@ def sql_value_literal(value: object, col_type: str) -> str:
         return f"DATE '{text}'"
 
     # string
-    text = str(value).replace("'", "''")
-    return f"'{text}'"
+    return sql_string_literal(str(value))
+
+
+_LIKE_ESCAPE_CHAR = "\\"
 
 
 def _like_escape(text: str) -> str:
+    """Escape LIKE metacharacters; the literal layer re-escapes backslashes."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _ilike_pattern(expr: str, value: object, kind: str) -> str:
-    esc = _like_escape(str(value)).replace("'", "''")
+    esc = _like_escape(str(value))
     if kind == "has":
         pat = f"%{esc}%"
     elif kind == "startswith":
@@ -280,7 +322,10 @@ def _ilike_pattern(expr: str, value: object, kind: str) -> str:
         pat = f"%{esc}"
     else:
         raise HTTPException(status_code=400, detail=f"Unknown pattern kind {kind}")
-    return f"{expr} ILIKE '{pat}' ESCAPE '\\\\'"
+    return (
+        f"{expr} ILIKE {sql_string_literal(pat)} "
+        f"ESCAPE {sql_string_literal(_LIKE_ESCAPE_CHAR)}"
+    )
 
 
 def _as_filter_value(value: object, col_type: str) -> object | None:

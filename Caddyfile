@@ -1,5 +1,34 @@
 snowflake-explorer.w-ilyas.site {
+	# Hash comes from SF_EXPLORER_AUTH_HASH on the host. The baked fallback is a
+	# bcrypt hash of a discarded random password, so a missing env var locks the
+	# site instead of publishing it.
+	basic_auth {
+		ilyas {$SF_EXPLORER_AUTH_HASH:$2b$12$xQ7CyN2spsfJasF95tIePO3GnPE1DRv8eMWWh7PtPNDgIp4h4T0I2}
+	}
+
 	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		# Everything is bundled and same-origin; img-src keeps remote image
+		# previews in the cell inspector working, style-src covers the styles
+		# Monaco injects at runtime.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	}
+
+	# The root only ever holds frontend/dist (the deploy rsyncs --delete over it),
+	# but 404 dot-paths anyway so a future root change cannot serve .git or .env.
+	# ACME challenges must still get through.
+	@dotpath {
+		path_regexp (^|/)\.
+		not path /.well-known/*
+	}
+	handle @dotpath {
+		respond 404
+	}
+
 	handle /api/* {
 		reverse_proxy localhost:1235
 	}
