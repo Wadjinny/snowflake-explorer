@@ -2,6 +2,6 @@ services:
   backend:
     image: ghcr.io/wadjinny/snowflake-explorer/backend:${IMAGE_TAG:-latest}
     ports:
-      - "1235:1234"
+      - "127.0.0.1:1235:1234"
     restart: unless-stopped
     mem_limit: 256m

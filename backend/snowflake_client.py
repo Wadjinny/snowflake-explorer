@@ -20,6 +20,9 @@ Params = Sequence[Any] | Mapping[str, Any] | None
 # Reuse a live Snowflake session for this long after first open.
 POOL_TTL_SECONDS = 2 * 60 * 60
 
+# Cap on a single authentication attempt.
+LOGIN_TIMEOUT_SECONDS = 15
+
 # Named pyformat placeholders: %(limit)s — leave these alone when escaping.
 _PYFORMAT_PLACEHOLDER = re.compile(r"%\([^)]+\)s")
 
@@ -66,6 +69,9 @@ def _open_connection(cfg: SnowflakeConnection) -> Any:
         "user": cfg.user,
         "password": cfg.password,
         "warehouse": cfg.warehouse,
+        # Endpoints are sync, so a slow login holds a threadpool slot; the
+        # connector default (60s plus retries) makes that a cheap DoS lever.
+        "login_timeout": LOGIN_TIMEOUT_SECONDS,
     }
     if cfg.role:
         kwargs["role"] = cfg.role
