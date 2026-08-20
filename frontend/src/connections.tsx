@@ -1,7 +1,9 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
@@ -41,11 +43,11 @@ export function ConnectionsProvider({ children }: { children: ReactNode }) {
     else localStorage.removeItem(ACTIVE_KEY)
   }, [activeId])
 
-  const setActiveId = (id: string | null) => {
+  const setActiveId = useCallback((id: string | null) => {
     setActiveIdState(id)
-  }
+  }, [])
 
-  const upsert = (connection: Connection) => {
+  const upsert = useCallback((connection: Connection) => {
     setConnections((prev) => {
       const idx = prev.findIndex((c) => c.id === connection.id)
       if (idx === -1) return [...prev, connection]
@@ -54,9 +56,9 @@ export function ConnectionsProvider({ children }: { children: ReactNode }) {
       return next
     })
     setActiveIdState((current) => current ?? connection.id)
-  }
+  }, [])
 
-  const remove = (id: string) => {
+  const remove = useCallback((id: string) => {
     setConnections((prev) => {
       const next = prev.filter((c) => c.id !== id)
       setActiveIdState((current) => {
@@ -65,14 +67,20 @@ export function ConnectionsProvider({ children }: { children: ReactNode }) {
       })
       return next
     })
-  }
+  }, [])
 
-  const active = connections.find((c) => c.id === activeId) ?? null
+  const active = useMemo(
+    () => connections.find((c) => c.id === activeId) ?? null,
+    [connections, activeId],
+  )
+
+  const value = useMemo(
+    () => ({ connections, activeId, active, setActiveId, upsert, remove }),
+    [connections, activeId, active, setActiveId, upsert, remove],
+  )
 
   return (
-    <ConnectionsContext.Provider
-      value={{ connections, activeId, active, setActiveId, upsert, remove }}
-    >
+    <ConnectionsContext.Provider value={value}>
       {children}
     </ConnectionsContext.Provider>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   ColumnInfo,
   ColumnFilter,
@@ -313,27 +313,52 @@ export default function TransformBuilder({
     disabledSteps: (recipe.disabledSteps ?? []).filter((s) => s !== id),
   })
 
-  const selectedRefs = new Set(recipe.columns.map((c) => c.ref))
   const hasColumnSelection = columnsSelectMode
 
-  const columnEntries = columns.map((col) => {
-    const checked = !hasColumnSelection || selectedRefs.has(col.name)
-    const rename = recipe.columns.find((c) => c.ref === col.name)?.as ?? ''
-    return { col, checked, rename }
-  })
+  /** Bare column name per qualified ref, parsed once instead of per filter pass. */
+  const bareByRef = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const col of columns) {
+      map.set(
+        col.name,
+        parseColumnRef(col.name, recipe.sourceAlias).column.toLowerCase(),
+      )
+    }
+    return map
+  }, [columns, recipe.sourceAlias])
+
+  const selectedRefs = useMemo(
+    () => new Set(recipe.columns.map((c) => c.ref)),
+    [recipe.columns],
+  )
+
+  const columnEntries = useMemo(() => {
+    // Map, not `.find` per column: that made this O(columns x selected).
+    const renameByRef = new Map(
+      recipe.columns.map((c) => [c.ref, c.as ?? ''] as const),
+    )
+    return columns.map((col) => ({
+      col,
+      checked: !hasColumnSelection || selectedRefs.has(col.name),
+      rename: renameByRef.get(col.name) ?? '',
+    }))
+  }, [columns, recipe.columns, selectedRefs, hasColumnSelection])
 
   const columnSearchQ = columnSearch.trim().toLowerCase()
-  const visibleColumnEntries = columnEntries.filter(({ col, checked, rename }) => {
-    if (columnView === 'selected' && !checked) return false
-    if (columnView === 'hidden' && checked) return false
-    if (!columnSearchQ) return true
-    const { column: bare } = parseColumnRef(col.name, recipe.sourceAlias)
-    return (
-      bare.toLowerCase().includes(columnSearchQ) ||
-      col.name.toLowerCase().includes(columnSearchQ) ||
-      rename.toLowerCase().includes(columnSearchQ)
-    )
-  })
+  const visibleColumnEntries = useMemo(
+    () =>
+      columnEntries.filter(({ col, checked, rename }) => {
+        if (columnView === 'selected' && !checked) return false
+        if (columnView === 'hidden' && checked) return false
+        if (!columnSearchQ) return true
+        return (
+          (bareByRef.get(col.name) ?? '').includes(columnSearchQ) ||
+          col.name.toLowerCase().includes(columnSearchQ) ||
+          rename.toLowerCase().includes(columnSearchQ)
+        )
+      }),
+    [columnEntries, columnView, columnSearchQ, bareByRef],
+  )
 
   const selectedCount = hasColumnSelection
     ? recipe.columns.length
@@ -341,21 +366,24 @@ export default function TransformBuilder({
   const hiddenCount = hasColumnSelection
     ? columns.length - recipe.columns.length
     : 0
-  const groupBySet = new Set(recipe.groupBy)
+  const groupBySet = useMemo(() => new Set(recipe.groupBy), [recipe.groupBy])
   const groupBySelectedCount = recipe.groupBy.length
   const groupByHiddenCount = columns.length - groupBySelectedCount
   const groupBySearchQ = groupBySearch.trim().toLowerCase()
-  const visibleGroupByColumns = columns.filter((c) => {
-    const grouped = groupBySet.has(c.name)
-    if (groupByView === 'selected' && !grouped) return false
-    if (groupByView === 'hidden' && grouped) return false
-    if (!groupBySearchQ) return true
-    const { column: bare } = parseColumnRef(c.name, recipe.sourceAlias)
-    return (
-      bare.toLowerCase().includes(groupBySearchQ) ||
-      c.name.toLowerCase().includes(groupBySearchQ)
-    )
-  })
+  const visibleGroupByColumns = useMemo(
+    () =>
+      columns.filter((c) => {
+        const grouped = groupBySet.has(c.name)
+        if (groupByView === 'selected' && !grouped) return false
+        if (groupByView === 'hidden' && grouped) return false
+        if (!groupBySearchQ) return true
+        return (
+          (bareByRef.get(c.name) ?? '').includes(groupBySearchQ) ||
+          c.name.toLowerCase().includes(groupBySearchQ)
+        )
+      }),
+    [columns, groupBySet, groupByView, groupBySearchQ, bareByRef],
+  )
 
   const selectAllGroupBy = () => {
     patch({ groupBy: columns.map((c) => c.name) })
@@ -585,20 +613,36 @@ export default function TransformBuilder({
     }
   }
 
-  const aliases = [recipe.sourceAlias, ...recipe.joins.map((j) => j.alias)]
-  const columnsForAlias = (alias: string) =>
-    columns
-      .filter((c) => parseColumnRef(c.name).alias === alias)
-      .map((c) => ({
-        name: parseColumnRef(c.name).column,
-        type: c.type,
-      }))
+  const aliases = useMemo(
+    () => [recipe.sourceAlias, ...recipe.joins.map((j) => j.alias)],
+    [recipe.sourceAlias, recipe.joins],
+  )
 
-  const sortOptions = orderColumnOptions(recipe, columns)
-  const sortColumnInfos = sortOptions.map((name) => {
-    const col = columns.find((c) => c.name === name)
-    return { name, type: col?.type }
-  })
+  /** alias -> its bare columns, grouped in one pass over `columns`. */
+  const columnsByAlias = useMemo(() => {
+    const map = new Map<string, { name: string; type: ColumnInfo['type'] }[]>()
+    for (const c of columns) {
+      const { alias, column } = parseColumnRef(c.name)
+      const entry = { name: column, type: c.type }
+      const list = map.get(alias)
+      if (list) list.push(entry)
+      else map.set(alias, [entry])
+    }
+    return map
+  }, [columns])
+  const columnsForAlias = (alias: string) => columnsByAlias.get(alias) ?? []
+
+  const sortColumnInfos = useMemo(() => {
+    const typeByName = new Map(columns.map((c) => [c.name, c.type] as const))
+    return orderColumnOptions(recipe, columns).map((name) => ({
+      name,
+      type: typeByName.get(name),
+    }))
+  }, [recipe, columns])
+  const sortOptions = useMemo(
+    () => sortColumnInfos.map((c) => c.name),
+    [sortColumnInfos],
+  )
   const availableSteps = ALL_STEPS.filter((id) => {
     if (active.has(id)) return false
     // Having only makes sense once Aggregate is present.

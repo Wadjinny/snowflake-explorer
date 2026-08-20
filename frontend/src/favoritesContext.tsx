@@ -3,13 +3,14 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from 'react'
 import { useConnections } from './connections'
 import {
+  favoriteKey,
   favoritesEqual,
-  hasFavorite,
   loadFavorites,
   saveFavorites,
   toggleFavorite,
@@ -38,14 +39,17 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
     setFavorites(loadFavorites(activeId))
   }, [activeId])
 
-  const toggle = (fav: Favorite) => {
-    if (!activeId) return
-    setFavorites((prev) => {
-      const next = toggleFavorite(prev, fav)
-      saveFavorites(activeId, next)
-      return next
-    })
-  }
+  const toggle = useCallback(
+    (fav: Favorite) => {
+      if (!activeId) return
+      setFavorites((prev) => {
+        const next = toggleFavorite(prev, fav)
+        saveFavorites(activeId, next)
+        return next
+      })
+    },
+    [activeId],
+  )
 
   const replace = useCallback(
     (next: Favorite[]) => {
@@ -59,10 +63,21 @@ export function FavoritesProvider({ children }: { children: ReactNode }) {
     [activeId],
   )
 
-  const isFavorite = (fav: Favorite) => hasFavorite(favorites, fav)
+  // The object tree asks once per row; a linear scan per call made favorite
+  // lookup O(rows x favorites).
+  const keys = useMemo(() => new Set(favorites.map(favoriteKey)), [favorites])
+  const isFavorite = useCallback(
+    (fav: Favorite) => keys.has(favoriteKey(fav)),
+    [keys],
+  )
+
+  const value = useMemo(
+    () => ({ favorites, isFavorite, toggle, replace }),
+    [favorites, isFavorite, toggle, replace],
+  )
 
   return (
-    <FavoritesContext.Provider value={{ favorites, isFavorite, toggle, replace }}>
+    <FavoritesContext.Provider value={value}>
       {children}
     </FavoritesContext.Provider>
   )

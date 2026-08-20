@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -25,6 +26,12 @@ import { isFacetable, filterIsActive } from '../types'
 import ColumnFilterPopover from './ColumnFilterPopover'
 import type { GridSelection } from './DetailInspector'
 import { formatCell, HeaderFilterButton } from './gridCells'
+import {
+  columnWidthStyle,
+  gridCellClasses,
+  type GridColumn,
+} from './gridColumns'
+import { GridRow } from './gridRow'
 
 type Props = {
   data: PreviewResult
@@ -68,16 +75,6 @@ function normalizeRange(range: CellRange): {
     c0: Math.min(range.anchor.col, range.focus.col),
     c1: Math.max(range.anchor.col, range.focus.col),
   }
-}
-
-function cellInRange(
-  row: number,
-  col: number,
-  range: CellRange | null,
-): boolean {
-  if (!range) return false
-  const { r0, r1, c0, c1 } = normalizeRange(range)
-  return row >= r0 && row <= r1 && col >= c0 && col <= c1
 }
 
 function tsvEscape(value: string): string {
@@ -202,20 +199,27 @@ export default function DataGrid({
   visibleRef.current = visible
   const dataRef = useRef(data)
   dataRef.current = data
+  // Ref-backed so the row callbacks below can stay referentially stable even
+  // though the parent passes a fresh closure on every render.
+  const onSelectionChangeRef = useRef(onSelectionChange)
+  onSelectionChangeRef.current = onSelectionChange
 
   const lastRowIndex = Math.max(0, data.rows.length - 1)
 
-  const posFromPoint = (clientX: number, clientY: number): CellPos | null => {
-    const el = document.elementFromPoint(clientX, clientY)
-    const td =
-      el instanceof Element ? el.closest('td[data-row][data-vcol]') : null
-    if (!(td instanceof HTMLElement)) return null
-    if (!wrapRef.current?.contains(td)) return null
-    const row = Number(td.dataset.row)
-    const col = Number(td.dataset.vcol)
-    if (!Number.isFinite(row) || !Number.isFinite(col)) return null
-    return { row, col }
-  }
+  const posFromPoint = useCallback(
+    (clientX: number, clientY: number): CellPos | null => {
+      const el = document.elementFromPoint(clientX, clientY)
+      const td =
+        el instanceof Element ? el.closest('td[data-row][data-vcol]') : null
+      if (!(td instanceof HTMLElement)) return null
+      if (!wrapRef.current?.contains(td)) return null
+      const row = Number(td.dataset.row)
+      const col = Number(td.dataset.vcol)
+      if (!Number.isFinite(row) || !Number.isFinite(col)) return null
+      return { row, col }
+    },
+    [],
+  )
 
   const vcolFromPoint = (clientX: number, clientY: number): number | null => {
     const el = document.elementFromPoint(clientX, clientY)
@@ -226,47 +230,88 @@ export default function DataGrid({
     return Number.isFinite(col) ? col : null
   }
 
-  const attachRangeListeners = (
-    onMove: (ev: PointerEvent) => void,
-  ) => {
-    const onUp = () => {
-      rangeDragging.current = false
-      document.body.classList.remove('cell-range-selecting')
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
-  }
+  const attachRangeListeners = useCallback(
+    (onMove: (ev: PointerEvent) => void) => {
+      const onUp = () => {
+        rangeDragging.current = false
+        document.body.classList.remove('cell-range-selecting')
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
+    },
+    [],
+  )
 
-  const beginRangeSelect = (
-    pos: CellPos,
-    e: ReactPointerEvent<HTMLTableCellElement>,
-  ) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setOpenColumn(null)
-    rangeModeRef.current = 'cells'
-    rangeDragging.current = true
-    const next = { anchor: pos, focus: pos }
-    cellRangeRef.current = next
-    setCellRange(next)
-    document.body.classList.add('cell-range-selecting')
+  const onRangeStart = useCallback(
+    (rowIndex: number, vcol: number, e: ReactPointerEvent<HTMLElement>) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setOpenColumn(null)
+      rangeModeRef.current = 'cells'
+      rangeDragging.current = true
+      const pos: CellPos = { row: rowIndex, col: vcol }
+      const next = { anchor: pos, focus: pos }
+      cellRangeRef.current = next
+      setCellRange(next)
+      document.body.classList.add('cell-range-selecting')
 
-    attachRangeListeners((ev) => {
-      if (!rangeDragging.current) return
-      const at = posFromPoint(ev.clientX, ev.clientY)
-      if (!at) return
-      const prev = cellRangeRef.current
-      if (!prev) return
-      if (prev.focus.row === at.row && prev.focus.col === at.col) return
-      const updated = { anchor: prev.anchor, focus: at }
-      cellRangeRef.current = updated
-      setCellRange(updated)
-    })
-  }
+      attachRangeListeners((ev) => {
+        if (!rangeDragging.current) return
+        const at = posFromPoint(ev.clientX, ev.clientY)
+        if (!at) return
+        const prev = cellRangeRef.current
+        if (!prev) return
+        if (prev.focus.row === at.row && prev.focus.col === at.col) return
+        const updated = { anchor: prev.anchor, focus: at }
+        cellRangeRef.current = updated
+        setCellRange(updated)
+      })
+    },
+    [attachRangeListeners, posFromPoint],
+  )
+
+  const onSelectCell = useCallback(
+    (rowIndex: number, column: string | null) => {
+      setOpenColumn(null)
+      setCellRange(null)
+      onSelectionChangeRef.current?.({ rowIndex, column })
+    },
+    [],
+  )
+
+  /** Per-column cell data, resolved once instead of once per cell. */
+  const gridColumns = useMemo<GridColumn[]>(
+    () =>
+      visible.map(({ col, index }) => {
+        const width =
+          resizePreview?.name === col.name
+            ? resizePreview.width
+            : columnWidths[col.name]
+        const highlighted = highlightColumn === col.name
+        return {
+          name: col.name,
+          type: col.type,
+          index,
+          style: columnWidthStyle(width),
+          ...gridCellClasses(col.type, {
+            highlighted,
+            dimmed: highlighted && highlightIsHidden,
+            resized: width != null,
+          }),
+        }
+      }),
+    [visible, columnWidths, resizePreview, highlightColumn, highlightIsHidden],
+  )
+
+  /** Selected range bounds, normalized once rather than per cell. */
+  const range = useMemo(
+    () => (cellRange ? normalizeRange(cellRange) : null),
+    [cellRange],
+  )
 
   const beginColumnSelect = (
     vcol: number,
@@ -310,8 +355,8 @@ export default function DataGrid({
   }
 
   const columnFullySelected = (vcol: number): boolean => {
-    if (!cellRange) return false
-    const { r0, r1, c0, c1 } = normalizeRange(cellRange)
+    if (!range) return false
+    const { r0, r1, c0, c1 } = range
     if (vcol < c0 || vcol > c1) return false
     if (data.rows.length === 0) return true
     return r0 === 0 && r1 === lastRowIndex
@@ -783,62 +828,24 @@ export default function DataGrid({
           ) : (
             data.rows.map((row, i) => {
               const rowSelected = selection?.rowIndex === i
+              const inRangeRow =
+                range != null && i >= range.r0 && i <= range.r1
               return (
-                <tr
+                <GridRow
                   key={i}
-                  className={rowSelected ? 'row-selected' : undefined}
-                >
-                  <td
-                    className="cell-rownum"
-                    title={`Double-click to inspect row ${rowOffset + i}`}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation()
-                      setOpenColumn(null)
-                      setCellRange(null)
-                      onSelectionChange?.({ rowIndex: i, column: null })
-                    }}
-                  >
-                    {rowOffset + i}
-                  </td>
-                  {visible.map(({ col, index }, vcol) => {
-                    const cell = row[index]
-                    const colType: ColumnType = col.type
-                    const isNull = cell == null
-                    const highlighted = highlightColumn === col.name
-                    const dimmed = highlighted && highlightIsHidden
-                    const cellSelected =
-                      rowSelected && selection?.column === col.name
-                    const inRange = cellInRange(i, vcol, cellRange)
-                    return (
-                      <td
-                        key={col.name}
-                        style={colStyle(col.name)}
-                        className={`${
-                          isNull ? 'cell-null' : `cell-type type-${colType}`
-                        }${highlighted ? ' col-highlight' : ''}${dimmed ? ' col-highlight-dim' : ''}${cellSelected ? ' cell-selected' : ''}${inRange ? ' cell-range' : ''}${widthFor(col.name) != null ? ' col-resized' : ''}`}
-                        title={isNull ? 'NULL' : String(cell)}
-                        data-col={col.name}
-                        data-row={i}
-                        data-vcol={vcol}
-                        onPointerDown={(e) => {
-                          if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return
-                          beginRangeSelect({ row: i, col: vcol }, e)
-                        }}
-                        onDoubleClick={(e) => {
-                          e.stopPropagation()
-                          setOpenColumn(null)
-                          setCellRange(null)
-                          onSelectionChange?.({
-                            rowIndex: i,
-                            column: col.name,
-                          })
-                        }}
-                      >
-                        {isNull ? 'NULL' : formatCell(cell, colType)}
-                      </td>
-                    )
-                  })}
-                </tr>
+                  row={row}
+                  rowIndex={i}
+                  rowNumber={rowOffset + i}
+                  columns={gridColumns}
+                  rowSelected={rowSelected}
+                  selectedColumn={
+                    rowSelected ? (selection?.column ?? null) : null
+                  }
+                  rangeFrom={inRangeRow ? range.c0 : -1}
+                  rangeTo={inRangeRow ? range.c1 : -1}
+                  onSelectCell={onSelectCell}
+                  onRangeStart={onRangeStart}
+                />
               )
             })
           )}

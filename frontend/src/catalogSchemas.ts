@@ -59,3 +59,17 @@ export function schemasByDatabaseMap(
   }
   return map
 }
+
+/** database name → its schemas, for one pass over the account-wide list. */
+export function groupSchemasByDatabase(
+  all: SchemaItem[] | undefined,
+): ReadonlyMap<string, NameItem[]> {
+  const map = new Map<string, NameItem[]>()
+  if (!all) return map
+  for (const s of all) {
+    const list = map.get(s.database)
+    if (list) list.push({ name: s.name })
+    else map.set(s.database, [{ name: s.name }])
+  }
+  return map
+}

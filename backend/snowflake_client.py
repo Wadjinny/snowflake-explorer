@@ -20,6 +20,11 @@ Params = Sequence[Any] | Mapping[str, Any] | None
 # Reuse a live Snowflake session for this long after first open.
 POOL_TTL_SECONDS = 2 * 60 * 60
 
+# Live sessions handed out concurrently per credential set. The UI fires
+# several reads at once (tree expansion, preview + COUNT, facets), so a single
+# shared session would queue them all behind one another.
+MAX_SESSIONS_PER_KEY = 6
+
 # Cap on a single authentication attempt.
 LOGIN_TIMEOUT_SECONDS = 15
 
@@ -79,21 +84,35 @@ def _open_connection(cfg: SnowflakeConnection) -> Any:
 
 
 @dataclass
-class _CachedConn:
+class _PooledConn:
     conn: Any
     created_at: float
-    lock: threading.RLock
+    # Bumped by invalidate(); a session from an older generation is dropped
+    # instead of being returned to the idle list.
+    generation: int
 
 
 class ConnectionPool:
-    """In-memory Snowflake connection cache keyed by hash(credentials)."""
+    """Bounded pool of live Snowflake sessions keyed by hash(credentials).
 
-    def __init__(self, ttl_seconds: float = POOL_TTL_SECONDS) -> None:
+    A checked-out session is never handed to a second caller, so concurrent
+    requests run on distinct sessions rather than queueing on one. Sessions are
+    reused until ``ttl_seconds`` after they were opened.
+    """
+
+    def __init__(
+        self,
+        ttl_seconds: float = POOL_TTL_SECONDS,
+        max_per_key: int = MAX_SESSIONS_PER_KEY,
+    ) -> None:
         self._ttl = ttl_seconds
+        self._max_per_key = max_per_key
         self._guard = threading.Lock()
-        self._entries: dict[str, _CachedConn] = {}
+        self._idle: dict[str, list[_PooledConn]] = {}
+        self._slots: dict[str, threading.BoundedSemaphore] = {}
+        self._generation: dict[str, int] = {}
 
-    def _expired(self, entry: _CachedConn, now: float) -> bool:
+    def _expired(self, entry: _PooledConn, now: float) -> bool:
         return (now - entry.created_at) >= self._ttl
 
     def _close_quiet(self, conn: Any) -> None:
@@ -102,58 +121,85 @@ class ConnectionPool:
         except Exception:
             pass
 
-    def _get_or_create(self, cfg: SnowflakeConnection) -> _CachedConn:
-        key = credentials_hash(cfg)
+    def _slot(self, key: str) -> threading.BoundedSemaphore:
+        with self._guard:
+            slot = self._slots.get(key)
+            if slot is None:
+                slot = threading.BoundedSemaphore(self._max_per_key)
+                self._slots[key] = slot
+            return slot
+
+    def _checkout(self, cfg: SnowflakeConnection, key: str) -> _PooledConn:
+        now = time.monotonic()
+        stale: list[Any] = []
+        with self._guard:
+            generation = self._generation.get(key, 0)
+            idle = self._idle.get(key)
+            entry: _PooledConn | None = None
+            while idle:
+                candidate = idle.pop()
+                if candidate.generation != generation or self._expired(
+                    candidate, now
+                ):
+                    stale.append(candidate.conn)
+                    continue
+                entry = candidate
+                break
+        for conn in stale:
+            self._close_quiet(conn)
+        if entry is not None:
+            return entry
+        # Log in outside the guard: authentication takes seconds.
+        conn = _open_connection(cfg)
+        return _PooledConn(
+            conn=conn, created_at=time.monotonic(), generation=generation
+        )
+
+    def _checkin(self, key: str, entry: _PooledConn) -> None:
         now = time.monotonic()
         with self._guard:
-            entry = self._entries.get(key)
-            if entry is not None and not self._expired(entry, now):
-                return entry
-            if entry is not None:
-                self._close_quiet(entry.conn)
-                del self._entries[key]
-
-        conn = _open_connection(cfg)
-        new_entry = _CachedConn(conn=conn, created_at=time.monotonic(), lock=threading.RLock())
-        with self._guard:
-            # Another thread may have created one while we connected.
-            existing = self._entries.get(key)
-            if existing is not None and not self._expired(existing, time.monotonic()):
-                self._close_quiet(conn)
-                return existing
-            if existing is not None:
-                self._close_quiet(existing.conn)
-            self._entries[key] = new_entry
-            return new_entry
+            if entry.generation != self._generation.get(key, 0) or self._expired(
+                entry, now
+            ):
+                doomed: Any | None = entry.conn
+            else:
+                self._idle.setdefault(key, []).append(entry)
+                doomed = None
+        if doomed is not None:
+            self._close_quiet(doomed)
 
     def invalidate(self, cfg: SnowflakeConnection) -> None:
+        """Drop every session for these credentials (used after session death)."""
         key = credentials_hash(cfg)
         with self._guard:
-            entry = self._entries.pop(key, None)
-        if entry is not None:
-            self._close_quiet(entry.conn)
+            self._generation[key] = self._generation.get(key, 0) + 1
+            doomed = [entry.conn for entry in self._idle.pop(key, [])]
+        for conn in doomed:
+            self._close_quiet(conn)
 
     @contextmanager
     def connection(self, cfg: SnowflakeConnection) -> Iterator[Any]:
-        while True:
-            entry = self._get_or_create(cfg)
-            with entry.lock:
-                if self._expired(entry, time.monotonic()):
-                    key = credentials_hash(cfg)
-                    with self._guard:
-                        if self._entries.get(key) is entry:
-                            del self._entries[key]
-                            self._close_quiet(entry.conn)
-                    continue
-                yield entry.conn
-                return
+        key = credentials_hash(cfg)
+        slot = self._slot(key)
+        slot.acquire()
+        try:
+            entry = self._checkout(cfg, key)
+        except BaseException:
+            slot.release()
+            raise
+        try:
+            yield entry.conn
+        finally:
+            self._checkin(key, entry)
+            slot.release()
 
     def close_all(self) -> None:
         with self._guard:
-            entries = list(self._entries.values())
-            self._entries.clear()
-        for entry in entries:
-            self._close_quiet(entry.conn)
+            idle = list(self._idle.values())
+            self._idle.clear()
+        for entries in idle:
+            for entry in entries:
+                self._close_quiet(entry.conn)
 
 
 pool = ConnectionPool()
