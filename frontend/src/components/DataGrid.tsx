@@ -701,7 +701,6 @@ export default function DataGrid({
                   key={col.name}
                   ref={(node) => {
                     if (highlighted) highlightRef.current = node
-                    if (isOpen) filterAnchorRef.current = node
                   }}
                   style={colStyle(col.name)}
                   title={
@@ -763,11 +762,12 @@ export default function DataGrid({
                       <HeaderFilterButton
                         active={active}
                         open={isOpen}
-                        onToggle={() =>
+                        onToggle={(el) => {
+                          filterAnchorRef.current = el
                           setOpenColumn((c) =>
                             c === col.name ? null : col.name,
                           )
-                        }
+                        }}
                       />
                     ) : null}
                   </div>

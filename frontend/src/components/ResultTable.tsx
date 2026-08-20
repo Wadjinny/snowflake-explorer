@@ -690,7 +690,6 @@ export default function ResultTable({
                   key={col.name}
                   ref={(node) => {
                     if (highlighted) highlightRef.current = node
-                    if (isOpen) filterAnchorRef.current = node
                   }}
                   className={`th-cell${highlighted ? ' col-highlight' : ''}${isDragging ? ' col-dragging' : ''}${isDropTarget ? ' col-drop-target' : ''}${resized ? ' col-resized' : ''}${colSelected ? ' col-range' : ''}`}
                   style={colStyle(col.name)}
@@ -732,11 +731,12 @@ export default function ResultTable({
                       <HeaderFilterButton
                         active={active}
                         open={isOpen}
-                        onToggle={() =>
+                        onToggle={(el) => {
+                          filterAnchorRef.current = el
                           setOpenColumn((c) =>
                             c === col.name ? null : col.name,
                           )
-                        }
+                        }}
                       />
                     ) : null}
                   </div>

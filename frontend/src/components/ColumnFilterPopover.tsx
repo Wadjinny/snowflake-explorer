@@ -61,6 +61,21 @@ function clampPopoverSize(size: PopoverSize): PopoverSize {
   }
 }
 
+function measurePopoverPos(el: HTMLElement, size: PopoverSize): Pos {
+  const r = el.getBoundingClientRect()
+  const left = Math.max(
+    8,
+    Math.min(r.right - size.width, window.innerWidth - size.width - 8),
+  )
+  const spaceBelow = window.innerHeight - r.bottom - 8
+  const spaceAbove = r.top - 8
+  const placeBelow = spaceBelow >= 240 || spaceBelow >= spaceAbove
+  const avail = placeBelow ? spaceBelow : spaceAbove
+  const h = Math.min(size.height, Math.max(MIN_POPOVER_HEIGHT, avail))
+  const top = placeBelow ? r.bottom + 4 : Math.max(8, r.top - h - 4)
+  return { top, left, height: h }
+}
+
 function loadPopoverSize(): PopoverSize {
   try {
     const raw = localStorage.getItem(SIZE_STORAGE_KEY)
@@ -193,8 +208,14 @@ export default function ColumnFilterPopover({
   valuesEnabled = true,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<Pos | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const didFocusRef = useRef(false)
   const [size, setSize] = useState<PopoverSize>(() => loadPopoverSize())
+  const [pos, setPos] = useState<Pos | null>(() => {
+    const el = anchorRef?.current
+    if (!el) return null
+    return measurePopoverPos(el, loadPopoverSize())
+  })
   const sizeRef = useRef(size)
   sizeRef.current = size
   const resizeRef = useRef<{
@@ -312,21 +333,15 @@ export default function ColumnFilterPopover({
         setPos(null)
         return
       }
-      const r = el.getBoundingClientRect()
-      const { width, height } = sizeRef.current
-      const left = Math.max(
-        8,
-        Math.min(r.right - width, window.innerWidth - width - 8),
+      const next = measurePopoverPos(el, sizeRef.current)
+      setPos((prev) =>
+        prev &&
+        prev.top === next.top &&
+        prev.left === next.left &&
+        prev.height === next.height
+          ? prev
+          : next,
       )
-      const spaceBelow = window.innerHeight - r.bottom - 8
-      const spaceAbove = r.top - 8
-      const placeBelow = spaceBelow >= 240 || spaceBelow >= spaceAbove
-      const avail = placeBelow ? spaceBelow : spaceAbove
-      const h = Math.min(height, Math.max(MIN_POPOVER_HEIGHT, avail))
-      const top = placeBelow
-        ? r.bottom + 4
-        : Math.max(8, r.top - h - 4)
-      setPos({ top, left, height: h })
     }
     // Capture-phase scroll fires for the data grid too, which can emit many
     // events per frame; getBoundingClientRect + setPos on each one is wasted
@@ -349,6 +364,15 @@ export default function ColumnFilterPopover({
       window.removeEventListener('scroll', schedule, true)
     }
   }, [anchorRef, size.width, size.height])
+
+  useLayoutEffect(() => {
+    if (didFocusRef.current) return
+    if (anchorRef && !pos) return
+    if (mode !== 'values' || isBoolean) return
+    if (!searchRef.current) return
+    didFocusRef.current = true
+    searchRef.current.focus({ preventScroll: true })
+  }, [anchorRef, pos, mode, isBoolean])
 
   useEffect(() => {
     return () => {
@@ -838,11 +862,11 @@ export default function ColumnFilterPopover({
         <>
           {!isBoolean ? (
             <input
+              ref={searchRef}
               className="input facet-search"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search values…"
-              autoFocus
             />
           ) : null}
 
@@ -1076,6 +1100,12 @@ export default function ColumnFilterPopover({
     </div>
   )
 
+  // Wait until the fixed position is known so the menu is not inserted at
+  // `top: 100%` on body (that expands the document and the focused search
+  // field then scrolls the page away and back).
+  if (anchorRef && !pos) {
+    return null
+  }
   if (anchorRef) {
     return createPortal(body, document.body)
   }

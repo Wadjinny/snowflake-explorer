@@ -8,7 +8,7 @@ export function HeaderFilterButton({
 }: {
   active: boolean
   open: boolean
-  onToggle: () => void
+  onToggle: (anchor: HTMLElement) => void
 }) {
   return (
     <button
@@ -19,7 +19,7 @@ export function HeaderFilterButton({
       aria-expanded={open}
       onClick={(e) => {
         e.stopPropagation()
-        onToggle()
+        onToggle(e.currentTarget)
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
