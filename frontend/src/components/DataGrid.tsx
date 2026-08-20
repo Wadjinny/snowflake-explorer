@@ -120,6 +120,7 @@ export default function DataGrid({
   } | null>(null)
   const [cellRange, setCellRange] = useState<CellRange | null>(null)
   const highlightRef = useRef<HTMLTableCellElement | null>(null)
+  const filterAnchorRef = useRef<HTMLElement | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const didDrag = useRef(false)
   const rangeDragging = useRef(false)
@@ -700,6 +701,7 @@ export default function DataGrid({
                   key={col.name}
                   ref={(node) => {
                     if (highlighted) highlightRef.current = node
+                    if (isOpen) filterAnchorRef.current = node
                   }}
                   style={colStyle(col.name)}
                   title={
@@ -782,6 +784,7 @@ export default function DataGrid({
                       filters={filters}
                       onApply={(next) => applyColumnFilters(col.name, next)}
                       onClose={() => setOpenColumn(null)}
+                      anchorRef={filterAnchorRef}
                     />
                   ) : null}
                   {!dimmed ? (

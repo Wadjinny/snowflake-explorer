@@ -118,6 +118,7 @@ export default function ResultTable({
   } | null>(null)
   const [cellRange, setCellRange] = useState<CellRange | null>(null)
   const highlightRef = useRef<HTMLTableCellElement | null>(null)
+  const filterAnchorRef = useRef<HTMLElement | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const rangeDragging = useRef(false)
   const rangeModeRef = useRef<'cells' | 'columns'>('cells')
@@ -689,6 +690,7 @@ export default function ResultTable({
                   key={col.name}
                   ref={(node) => {
                     if (highlighted) highlightRef.current = node
+                    if (isOpen) filterAnchorRef.current = node
                   }}
                   className={`th-cell${highlighted ? ' col-highlight' : ''}${isDragging ? ' col-dragging' : ''}${isDropTarget ? ' col-drop-target' : ''}${resized ? ' col-resized' : ''}${colSelected ? ' col-range' : ''}`}
                   style={colStyle(col.name)}
@@ -756,6 +758,7 @@ export default function ResultTable({
                         applyColumnFilters(target.filterKey, next)
                       }
                       onClose={() => setOpenColumn(null)}
+                      anchorRef={filterAnchorRef}
                     />
                   ) : null}
                   {onColumnWidthsChange ? (
