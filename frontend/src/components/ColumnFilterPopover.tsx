@@ -328,12 +328,25 @@ export default function ColumnFilterPopover({
         : Math.max(8, r.top - h - 4)
       setPos({ top, left, height: h })
     }
+    // Capture-phase scroll fires for the data grid too, which can emit many
+    // events per frame; getBoundingClientRect + setPos on each one is wasted
+    // work since only the last position of a frame is painted.
+    let frame = 0
+    const schedule = () => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        update()
+      })
+    }
+
     update()
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', schedule)
+    window.addEventListener('scroll', schedule, true)
     return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
+      if (frame) cancelAnimationFrame(frame)
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('scroll', schedule, true)
     }
   }, [anchorRef, size.width, size.height])
 

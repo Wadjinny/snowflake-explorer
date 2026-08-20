@@ -1,7 +1,10 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -49,6 +52,8 @@ const SelectionsContext = createContext<SelectionsContextValue | null>(null)
 export function SelectionsProvider({ children }: { children: ReactNode }) {
   const { activeId } = useConnections()
   const [selections, setSelections] = useState<SavedSelection[]>([])
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
 
   useEffect(() => {
     if (!activeId) {
@@ -59,12 +64,13 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
   }, [activeId])
 
   const persist = (next: SavedSelection[]) => {
-    if (!activeId) return
-    saveSelections(activeId, next)
+    const id = activeIdRef.current
+    if (!id) return
+    saveSelections(id, next)
   }
 
-  const add: SelectionsContextValue['add'] = (input) => {
-    if (!activeId) return null
+  const add = useCallback<SelectionsContextValue['add']>((input) => {
+    if (!activeIdRef.current) return null
     const created = makeSelection({
       name: input.name ?? '',
       object: input.object,
@@ -82,10 +88,10 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
       return next
     })
     return created
-  }
+  }, [])
 
-  const update = (id: string, patch: SelectionUpdate) => {
-    if (!activeId) return
+  const update = useCallback((id: string, patch: SelectionUpdate) => {
+    if (!activeIdRef.current) return
     setSelections((prev) => {
       const next = prev.map((s) => {
         if (s.id !== id) return s
@@ -111,27 +117,33 @@ export function SelectionsProvider({ children }: { children: ReactNode }) {
       persist(next)
       return next
     })
-  }
+  }, [])
 
-  const remove = (id: string) => {
-    if (!activeId) return
+  const remove = useCallback((id: string) => {
+    if (!activeIdRef.current) return
     setSelections((prev) => {
       const next = prev.filter((s) => s.id !== id)
       persist(next)
       return next
     })
-  }
+  }, [])
 
-  const rename = (id: string, name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    update(id, { name: trimmed })
-  }
+  const rename = useCallback(
+    (id: string, name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      update(id, { name: trimmed })
+    },
+    [update],
+  )
+
+  const value = useMemo(
+    () => ({ selections, add, update, remove, rename }),
+    [selections, add, update, remove, rename],
+  )
 
   return (
-    <SelectionsContext.Provider
-      value={{ selections, add, update, remove, rename }}
-    >
+    <SelectionsContext.Provider value={value}>
       {children}
     </SelectionsContext.Provider>
   )

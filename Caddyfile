@@ -6,7 +6,7 @@ snowflake-explorer.w-ilyas.site {
 		ilyas {$SF_EXPLORER_AUTH_HASH:$2b$12$xQ7CyN2spsfJasF95tIePO3GnPE1DRv8eMWWh7PtPNDgIp4h4T0I2}
 	}
 
-	encode gzip
+	encode zstd gzip
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
@@ -17,6 +17,19 @@ snowflake-explorer.w-ilyas.site {
 		# Monaco injects at runtime.
 		Content-Security-Policy "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 	}
+
+	# Vite content-hashes every file under /assets, so those can be cached
+	# forever. Without this the browser only gets an ETag and revalidates all
+	# ~90 chunks (Monaco ships one per language) on every reload.
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# Everything else must revalidate. The HTML entry point especially: a cached
+	# index.html would keep pointing at asset hashes the next deploy deletes.
+	# Matched on the request path, so the /index.html SPA fallback is covered
+	# too (header runs before try_files rewrites the path).
+	@revalidate not path /assets/*
+	header @revalidate Cache-Control "no-cache"
 
 	# The root only ever holds frontend/dist (the deploy rsyncs --delete over it),
 	# but 404 dot-paths anyway so a future root change cannot serve .git or .env.

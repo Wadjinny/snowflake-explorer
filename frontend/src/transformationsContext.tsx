@@ -1,7 +1,10 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -56,6 +59,10 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
   const [transformations, setTransformations] = useState<
     SavedTransformation[]
   >([])
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  const itemsRef = useRef(transformations)
+  itemsRef.current = transformations
 
   useEffect(() => {
     if (!activeId) {
@@ -66,12 +73,13 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
   }, [activeId])
 
   const persist = (next: SavedTransformation[]) => {
-    if (!activeId) return
-    saveTransformations(activeId, next)
+    const id = activeIdRef.current
+    if (!id) return
+    saveTransformations(id, next)
   }
 
-  const add: TransformationsContextValue['add'] = (input) => {
-    if (!activeId) return null
+  const add = useCallback<TransformationsContextValue['add']>((input) => {
+    if (!activeIdRef.current) return null
     const created = makeTransformation(input)
     setTransformations((prev) => {
       const next = [created, ...prev]
@@ -79,10 +87,10 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
       return next
     })
     return created
-  }
+  }, [])
 
-  const update: TransformationsContextValue['update'] = (id, patch) => {
-    if (!activeId) return
+  const update = useCallback<TransformationsContextValue['update']>((id, patch) => {
+    if (!activeIdRef.current) return
     setTransformations((prev) => {
       const next = prev.map((t) => {
         if (t.id !== id) return t
@@ -104,26 +112,29 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
       persist(next)
       return next
     })
-  }
+  }, [])
 
-  const remove = (id: string) => {
-    if (!activeId) return
+  const remove = useCallback((id: string) => {
+    if (!activeIdRef.current) return
     setTransformations((prev) => {
       const next = prev.filter((t) => t.id !== id)
       persist(next)
       return next
     })
-  }
+  }, [])
 
-  const rename = (id: string, name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    update(id, { name: trimmed })
-  }
+  const rename = useCallback(
+    (id: string, name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      update(id, { name: trimmed })
+    },
+    [update],
+  )
 
-  const duplicate = (id: string): SavedTransformation | null => {
-    if (!activeId) return null
-    const src = transformations.find((t) => t.id === id)
+  const duplicate = useCallback((id: string): SavedTransformation | null => {
+    if (!activeIdRef.current) return null
+    const src = itemsRef.current.find((t) => t.id === id)
     if (!src) return null
     return add({
       name: `${src.name} copy`,
@@ -134,12 +145,15 @@ export function TransformationsProvider({ children }: { children: ReactNode }) {
       columnWidths: { ...(src.columnWidths ?? {}) },
       pageSize: src.pageSize ?? getDefaultPageSize(),
     })
-  }
+  }, [add])
+
+  const value = useMemo(
+    () => ({ transformations, add, update, remove, rename, duplicate }),
+    [transformations, add, update, remove, rename, duplicate],
+  )
 
   return (
-    <TransformationsContext.Provider
-      value={{ transformations, add, update, remove, rename, duplicate }}
-    >
+    <TransformationsContext.Provider value={value}>
       {children}
     </TransformationsContext.Provider>
   )

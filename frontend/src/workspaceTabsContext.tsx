@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -92,7 +93,10 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
     })
   }, [activeId, browseTabs, transformTabs])
 
-  const items = buildUnifiedItems(order, browseTabs, transformTabs)
+  const items = useMemo(
+    () => buildUnifiedItems(order, browseTabs, transformTabs),
+    [order, browseTabs, transformTabs],
+  )
 
   const renameBrowseHandle = (oldKey: string, newKey: string) => {
     if (!activeId || oldKey === newKey) return
@@ -296,6 +300,11 @@ export function WorkspaceTabsProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // The value is deliberately not memoized: closeUnified / saveTransformTab
+  // close over `order`, the current location and the dialog, so a hand-written
+  // dep list would risk serving a stale closure to the close-with-save flow.
+  // This provider also re-renders whenever either tab list changes, so there is
+  // little to win. `items` above is memoized because it is purely derived.
   return (
     <WorkspaceTabsContext.Provider
       value={{

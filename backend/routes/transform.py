@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from snowflake.connector.errors import Error as SnowflakeError
 
+from columns import describe_columns
 from deps import get_connection
 from models import (
     ColumnInfo,
@@ -14,7 +16,9 @@ from models import (
     TransformRequest,
     TransformResult,
 )
+from rowset import fetch_page_with_total, json_response, serialize_rows
 from snowflake_client import (
+    credentials_hash,
     quote_ident,
     run_query,
     run_query_typed,
@@ -25,7 +29,6 @@ from transform_compile import (
     compile_inner_select,
     compile_pivot_select,
     join_targets,
-    object_fqn,
     order_limit_sql,
     parse_ref,
 )
@@ -34,22 +37,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["transform"])
 
-_MAX_CELL_CHARS = 2_000
-
-
-def _serialize_cell(value: object) -> object:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return f"[binary {len(value)} bytes]"
-    text = value if isinstance(value, str) else str(value)
-    if len(text) > _MAX_CELL_CHARS:
-        return text[:_MAX_CELL_CHARS] + "…"
-    return text
+def _total_cache_key(cfg: SnowflakeConnection, inner_sql: str) -> str:
+    """Key a recipe's total by its compiled statement, not by LIMIT/OFFSET."""
+    digest = hashlib.sha256(inner_sql.encode()).hexdigest()[:32]
+    return f"total:{credentials_hash(cfg)}:transform:{digest}"
 
 
 def _http_snowflake(exc: SnowflakeError) -> HTTPException:
@@ -62,14 +53,20 @@ def _probe_schemas(
     cfg: SnowflakeConnection,
     recipe: Any,
 ) -> dict[str, list[tuple[str, str]]]:
+    """Column names/types per source alias.
+
+    Goes through ``describe_columns`` rather than ``SELECT * LIMIT 0`` so it
+    shares the 30 minute ``column_cache`` with Browse: a builder edit or a page
+    turn no longer costs one round trip per source. ``DESC TABLE`` is also
+    cheaper than ``LIMIT 0`` on heavy views, which is why columns.py exists.
+    """
     schemas: dict[str, list[tuple[str, str]]] = {}
     for alias, obj in join_targets(recipe):
-        table = object_fqn(obj)
         try:
-            names, types, _ = run_query_typed(cfg, f"SELECT * FROM {table} LIMIT 0")
+            meta = describe_columns(cfg, obj.database, obj.schema_name, obj.name)
         except SnowflakeError as exc:
             raise _http_snowflake(exc) from exc
-        schemas[alias] = list(zip(names, types, strict=True))
+        schemas[alias] = [(c.name, c.type) for c in meta]
     return schemas
 
 
@@ -92,11 +89,11 @@ def _fetch_pivot_values(
     return [r[0] for r in rows]
 
 
-@router.post("/transform/run", response_model=TransformResult)
+@router.post("/transform/run", responses={200: {"model": TransformResult}})
 def run_transform(
     body: TransformRequest,
     cfg: SnowflakeConnection = Depends(get_connection),
-) -> TransformResult:
+) -> Response:
     recipe = body.recipe
     schemas = _probe_schemas(cfg, recipe)
 
@@ -138,28 +135,42 @@ def run_transform(
         f"{order_limit_sql(sorts, body.limit, body.offset)}"
     )
 
-    count_sql = f"SELECT COUNT(*) AS cnt FROM ({inner_sql}) AS _cnt"
-    total = -1
-    try:
-        _, count_rows = run_query(cfg, count_sql)
-        total = int(count_rows[0][0]) if count_rows else 0
-    except SnowflakeError as exc:
-        logger.warning("Transform COUNT failed: %s", snowflake_error_detail(exc))
+    def count() -> int:
+        """Total rows the recipe produces. Independent of LIMIT/OFFSET."""
+        try:
+            _, count_rows = run_query(
+                cfg, f"SELECT COUNT(*) AS cnt FROM ({inner_sql}) AS _cnt"
+            )
+            return int(count_rows[0][0]) if count_rows else 0
+        except SnowflakeError as exc:
+            logger.warning(
+                "Transform COUNT failed: %s", snowflake_error_detail(exc)
+            )
+            return -1
 
+    # Counting re-executes the whole recipe — joins, aggregations, pivot. Cache
+    # it against the compiled statement so paging does not re-run it, and
+    # overlap it with the row page on the first run.
     try:
-        out_names, out_types, rows = run_query_typed(cfg, data_sql)
+        (out_names, out_types, rows), total = fetch_page_with_total(
+            cache_key=_total_cache_key(cfg, inner_sql),
+            count=count,
+            fetch=lambda: run_query_typed(cfg, data_sql),
+        )
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
-    columns = [
-        ColumnInfo(name=n, type=cast(ColumnType, out_types[i]))
-        for i, n in enumerate(out_names)
-    ]
-    return TransformResult(
-        columns=columns,
-        rows=[[_serialize_cell(cell) for cell in row] for row in rows],
-        total=total,
-        sql=data_sql,
+    return json_response(
+        {
+            "columns": [
+                {"name": n, "type": out_types[i]}
+                for i, n in enumerate(out_names)
+            ],
+            "rows": serialize_rows(rows),
+            "total": total,
+            "sql": data_sql,
+        },
+        TransformResult,
     )
 
 

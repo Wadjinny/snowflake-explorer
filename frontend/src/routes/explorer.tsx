@@ -73,6 +73,12 @@ const SqlPreviewModal = lazy(
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 const DATA_FILTER_INFO_MAX = 5
 
+// Shared fallbacks so "no active tab" does not hand a fresh array/object to
+// every dependency array and memo on each render.
+const NO_FILTERS: ColumnFilter[] = []
+const NO_COLUMNS: string[] = []
+const NO_WIDTHS: Record<string, number> = {}
+
 function formatFilterInfoLabel(filter: ColumnFilter): string {
   const chips = filterChipLabels(filter)
   if (chips.length === 0) return normalizeFilterOp(filter.op)
@@ -265,14 +271,14 @@ export default function Explorer() {
   ])
 
   const selected = activeTab?.object ?? urlObject
-  const filters = activeTab?.filters ?? []
+  const filters = activeTab?.filters ?? NO_FILTERS
   const sort = activeTab?.sort ?? null
   const distinct = activeTab?.distinct ?? false
   const limit = activeTab?.limit ?? getDefaultPageSize(BROWSE_PAGE_SIZE_MAX)
   const offset = activeTab?.offset ?? 0
-  const hiddenColumns = activeTab?.hiddenColumns ?? []
-  const columnOrder = activeTab?.columnOrder ?? []
-  const columnWidths = activeTab?.columnWidths ?? {}
+  const hiddenColumns = activeTab?.hiddenColumns ?? NO_COLUMNS
+  const columnOrder = activeTab?.columnOrder ?? NO_COLUMNS
+  const columnWidths = activeTab?.columnWidths ?? NO_WIDTHS
   const linkedSelectionId = activeTab?.selectionId ?? urlSelectionId
   const selectionDirty = Boolean(activeTab?.selectionId && activeTab.dirty)
   const selectionName = activeTab?.selectionName
@@ -378,11 +384,11 @@ export default function Explorer() {
     setGridSelection(null)
   }, [activeKey])
 
-  const filterKey = JSON.stringify(filters)
-  const sortKey = sort ? `${sort.column}:${sort.direction}` : ''
+  // `filters` / `sort` keep their identity across unrelated tab updates
+  // (updateTab spreads the tab), so no JSON.stringify is needed to compare.
   useEffect(() => {
     setGridSelection(null)
-  }, [offset, limit, sortKey, activeKey, filterKey])
+  }, [offset, limit, sort, activeKey, filters])
 
   const onGridSelectionChange = (sel: GridSelection) => {
     setGridSelection(sel)

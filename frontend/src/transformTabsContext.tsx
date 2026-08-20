@@ -1,11 +1,15 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
 import { useConnections } from './connections'
+import { useDebouncedPersist } from './persistTabs'
 import type {
   BrowseTransformSeed,
   SavedTransformation,
@@ -55,6 +59,11 @@ const TransformTabsContext = createContext<TransformTabsContextValue | null>(
 export function TransformTabsProvider({ children }: { children: ReactNode }) {
   const { activeId } = useConnections()
   const [tabs, setTabs] = useState<OpenTransformTab[]>([])
+  /** Lets the actions below read current tabs without depending on them. */
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
 
   useEffect(() => {
     if (!activeId) {
@@ -64,70 +73,71 @@ export function TransformTabsProvider({ children }: { children: ReactNode }) {
     setTabs(loadTransformTabs(activeId))
   }, [activeId])
 
-  const persist = (next: OpenTransformTab[]) => {
-    if (!activeId) return
-    saveTransformTabs(activeId, next)
-  }
+  // Recipes are rewritten on every builder keystroke; debounce the write.
+  useDebouncedPersist(activeId, tabs, saveTransformTabs)
 
-  const openDraft = (
-    source: SelectedObject,
-    seed?: BrowseTransformSeed,
-  ): OpenTransformTab | null => {
-    if (!activeId) return null
-    const tab = makeDraftTab(source, seed)
-    setTabs((prev) => {
-      const next = [...prev, tab]
-      persist(next)
-      return next
-    })
-    return tab
-  }
+  const openDraft = useCallback(
+    (
+      source: SelectedObject,
+      seed?: BrowseTransformSeed,
+    ): OpenTransformTab | null => {
+      if (!activeIdRef.current) return null
+      const tab = makeDraftTab(source, seed)
+      setTabs((prev) => [...prev, tab])
+      return tab
+    },
+    [],
+  )
 
-  const openSaved = (saved: SavedTransformation): OpenTransformTab | null => {
-    if (!activeId) return null
-    const existing = tabs.find((t) => t.savedId === saved.id)
-    if (existing) return existing
-    const tab = makeTabFromSaved(saved)
-    setTabs((prev) => {
-      if (prev.some((t) => t.savedId === saved.id)) return prev
-      const next = [...prev, tab]
-      persist(next)
-      return next
-    })
-    return tab
-  }
+  const openSaved = useCallback(
+    (saved: SavedTransformation): OpenTransformTab | null => {
+      if (!activeIdRef.current) return null
+      const existing = tabsRef.current.find((t) => t.savedId === saved.id)
+      if (existing) return existing
+      const tab = makeTabFromSaved(saved)
+      setTabs((prev) =>
+        prev.some((t) => t.savedId === saved.id) ? prev : [...prev, tab],
+      )
+      return tab
+    },
+    [],
+  )
 
-  const updateTab: TransformTabsContextValue['updateTab'] = (id, patch) => {
-    if (!activeId) return
-    setTabs((prev) => {
-      const next = prev.map((t) => {
-        if (t.id !== id) return t
-        return {
-          ...t,
-          ...patch,
-          dirty: patch.dirty !== undefined ? patch.dirty : true,
-        }
-      })
-      persist(next)
-      return next
-    })
-  }
+  const updateTab = useCallback<TransformTabsContextValue['updateTab']>(
+    (id, patch) => {
+      if (!activeIdRef.current) return
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                ...patch,
+                dirty: patch.dirty !== undefined ? patch.dirty : true,
+              }
+            : t,
+        ),
+      )
+    },
+    [],
+  )
 
-  const closeTab = (id: string) => {
-    if (!activeId) return
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
-      persist(next)
-      return next
-    })
-  }
+  const closeTab = useCallback((id: string) => {
+    if (!activeIdRef.current) return
+    setTabs((prev) => prev.filter((t) => t.id !== id))
+  }, [])
 
-  const getTab = (id: string) => tabs.find((t) => t.id === id)
+  const getTab = useCallback(
+    (id: string) => tabsRef.current.find((t) => t.id === id),
+    [],
+  )
+
+  const value = useMemo<TransformTabsContextValue>(
+    () => ({ tabs, openDraft, openSaved, updateTab, closeTab, getTab }),
+    [tabs, openDraft, openSaved, updateTab, closeTab, getTab],
+  )
 
   return (
-    <TransformTabsContext.Provider
-      value={{ tabs, openDraft, openSaved, updateTab, closeTab, getTab }}
-    >
+    <TransformTabsContext.Provider value={value}>
       {children}
     </TransformTabsContext.Provider>
   )

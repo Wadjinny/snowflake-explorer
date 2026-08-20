@@ -12,6 +12,10 @@ T = TypeVar("T")
 COLUMN_CACHE_TTL = 30 * 60
 CATALOG_CACHE_TTL = 30 * 60
 FACET_CACHE_TTL = 5 * 60
+# Row totals are independent of OFFSET, so paging reuses one COUNT. Kept well
+# inside the client-side preview staleTime, so a cached total is never older
+# than the rows it describes.
+COUNT_CACHE_TTL = 5 * 60
 
 
 @dataclass
@@ -62,3 +66,4 @@ class TtlCache:
 column_cache = TtlCache(COLUMN_CACHE_TTL)
 catalog_cache = TtlCache(CATALOG_CACHE_TTL)
 facet_cache = TtlCache(FACET_CACHE_TTL)
+count_cache = TtlCache(COUNT_CACHE_TTL)

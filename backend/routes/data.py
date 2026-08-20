@@ -1,9 +1,9 @@
 import hashlib
 import json
 import logging
-from typing import Any, cast
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from snowflake.connector.errors import Error as SnowflakeError
 
 from columns import (
@@ -25,7 +25,6 @@ from filters import (
 from models import (
     ColumnFilter,
     ColumnInfo,
-    ColumnType,
     CountRequest,
     CountResult,
     FacetPeriodRequest,
@@ -38,7 +37,13 @@ from models import (
     SnowflakeConnection,
     SortSpec,
 )
-from query_cache import facet_cache
+from query_cache import count_cache, facet_cache
+from rowset import (
+    MAX_CELL_CHARS as _MAX_CELL_CHARS,
+    fetch_page_with_total,
+    json_response,
+    serialize_rows,
+)
 from snowflake_client import (
     credentials_hash,
     fqn,
@@ -54,25 +59,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["data"])
 
-_MAX_CELL_CHARS = 2_000
 # Fetch this many facet groups once; serve OFFSET pages from cache.
 _FACET_FETCH_CAP = 200
 _SAMPLE_PCT = 1.0
-
-
-def _serialize_cell(value: object) -> object:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return f"[binary {len(value)} bytes]"
-    text = value if isinstance(value, str) else str(value)
-    if len(text) > _MAX_CELL_CHARS:
-        return text[:_MAX_CELL_CHARS] + "…"
-    return text
 
 
 def _facet_label(value: object) -> str:
@@ -257,6 +246,44 @@ def _filters_fingerprint(filters: list[Any]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _total_cache_prefix(
+    cfg: SnowflakeConnection, db: str, schema: str, name: str
+) -> str:
+    return (
+        f"total:{credentials_hash(cfg)}:"
+        f"{db.upper()}:{schema.upper()}:{name.upper()}:"
+    )
+
+
+def _total_cache_key(
+    cfg: SnowflakeConnection,
+    db: str,
+    schema: str,
+    name: str,
+    *,
+    where: str,
+    distinct: bool,
+    project: list[ColumnMeta],
+) -> str:
+    """Key a row total by everything it depends on — but not by OFFSET."""
+    parts = [where, "1" if distinct else "0"]
+    # A DISTINCT count depends on which columns are projected.
+    if distinct:
+        parts.extend(c.name for c in project)
+    digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:32]
+    return _total_cache_prefix(cfg, db, schema, name) + digest
+
+
+def invalidate_totals(
+    cfg: SnowflakeConnection, db: str, schema: str, name: str
+) -> None:
+    count_cache.clear_prefix(_total_cache_prefix(cfg, db, schema, name))
+
+
+def _column_payload(columns: list[ColumnMeta] | list[ColumnInfo]) -> list[dict[str, str]]:
+    return [{"name": c.name, "type": c.type} for c in columns]
+
+
 def _run_preview(
     cfg: SnowflakeConnection,
     *,
@@ -265,7 +292,7 @@ def _run_preview(
     name: str,
     body: PreviewRequest,
     meta: list[ColumnMeta],
-) -> PreviewResult:
+) -> dict[str, Any]:
     table = fqn(db, schema, name)
     filters = _prune_filters(body.filters, meta)
     sort = _prune_sort(body.sort, meta)
@@ -308,50 +335,54 @@ def _run_preview(
     )
 
     heavy = is_account_usage(db, schema)
-    # Filtered / DISTINCT exact COUNT on Account Usage is multi-second;
-    # UI shows "?" until the client requests /count.
-    total = _resolve_total(
+    params = {"limit": body.limit, "offset": body.offset}
+    total_key = _total_cache_key(
         cfg,
-        table=table,
-        from_sql=from_sql,
+        db,
+        schema,
+        name,
         where=where,
         distinct=body.distinct,
-        heavy=heavy,
-        exact=False,
+        project=project,
     )
-
-    out_names, out_types, rows = run_query_typed(
-        cfg, data_sql, {"limit": body.limit, "offset": body.offset}
+    # Filtered / DISTINCT exact COUNT on Account Usage is multi-second;
+    # UI shows "?" until the client requests /count.
+    (out_names, out_types, rows), total = fetch_page_with_total(
+        cache_key=total_key,
+        count=lambda: _resolve_total(
+            cfg,
+            table=table,
+            from_sql=from_sql,
+            where=where,
+            distinct=body.distinct,
+            heavy=heavy,
+            exact=False,
+        ),
+        fetch=lambda: run_query_typed(cfg, data_sql, params),
     )
 
     type_by_name = dict(zip(names, types, strict=True))
     columns = [
-        ColumnInfo(
-            name=n,
-            type=cast(ColumnType, type_by_name.get(n, out_types[i])),
-        )
+        {"name": n, "type": type_by_name.get(n, out_types[i])}
         for i, n in enumerate(out_names)
     ]
     schema_columns = (
-        [
-            ColumnInfo(name=c.name, type=cast(ColumnType, c.type))
-            for c in meta
-        ]
+        _column_payload(meta)
         if use_subset and len(project) < len(meta)
         else None
     )
-    return PreviewResult(
-        columns=columns,
-        rows=[[_serialize_cell(cell) for cell in row] for row in rows],
-        total=total,
-        schemaColumns=schema_columns,
-        sql=display_sql,
-    )
+    return {
+        "columns": columns,
+        "rows": serialize_rows(rows),
+        "total": total,
+        "schemaColumns": schema_columns,
+        "sql": display_sql,
+    }
 
 
 @router.post(
     "/databases/{db}/schemas/{schema}/objects/{name}/preview",
-    response_model=PreviewResult,
+    responses={200: {"model": PreviewResult}},
 )
 def preview_object(
     db: str,
@@ -359,15 +390,18 @@ def preview_object(
     name: str,
     body: PreviewRequest,
     cfg: SnowflakeConnection = Depends(get_connection),
-) -> PreviewResult:
+) -> Response:
     try:
         meta = describe_columns(cfg, db, schema, name)
     except SnowflakeError as exc:
         raise _http_snowflake(exc) from exc
 
     try:
-        return _run_preview(
-            cfg, db=db, schema=schema, name=name, body=body, meta=meta
+        return json_response(
+            _run_preview(
+                cfg, db=db, schema=schema, name=name, body=body, meta=meta
+            ),
+            PreviewResult,
         )
     except SnowflakeError as exc:
         # Stale DESC cache after ALTER/DROP COLUMN → refresh once and retry.
@@ -380,10 +414,14 @@ def preview_object(
             name,
         )
         invalidate_columns(cfg, db, schema, name)
+        invalidate_totals(cfg, db, schema, name)
         try:
             meta = describe_columns(cfg, db, schema, name, force=True)
-            return _run_preview(
-                cfg, db=db, schema=schema, name=name, body=body, meta=meta
+            return json_response(
+                _run_preview(
+                    cfg, db=db, schema=schema, name=name, body=body, meta=meta
+                ),
+                PreviewResult,
             )
         except SnowflakeError as retry_exc:
             raise _http_snowflake(retry_exc) from retry_exc
@@ -405,7 +443,7 @@ def _run_count(
     use_subset = bool(body.distinct and hidden)
     project = _project_visible_columns(meta, hidden) if use_subset else meta
     from_sql = _preview_select_sql(table, project, distinct=body.distinct)
-    return _resolve_total(
+    total = _resolve_total(
         cfg,
         table=table,
         from_sql=from_sql,
@@ -414,6 +452,21 @@ def _run_count(
         heavy=is_account_usage(db, schema),
         exact=True,
     )
+    if total >= 0:
+        # Warm the shared cache so the next preview page skips its own COUNT.
+        count_cache.set(
+            _total_cache_key(
+                cfg,
+                db,
+                schema,
+                name,
+                where=where,
+                distinct=body.distinct,
+                project=project,
+            ),
+            total,
+        )
+    return total
 
 
 @router.post(
@@ -441,6 +494,7 @@ def count_object(
         if not is_invalid_identifier_error(exc):
             raise _http_snowflake(exc) from exc
         invalidate_columns(cfg, db, schema, name)
+        invalidate_totals(cfg, db, schema, name)
         try:
             meta = describe_columns(cfg, db, schema, name, force=True)
             total = _run_count(
@@ -585,10 +639,22 @@ def facet_periods(
         range_expr=range_expr,
     )
 
-    try:
-        _, rows = run_query(cfg, sql)
-    except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+    # Each drill level is its own GROUP BY over the table, and the tree re-asks
+    # for a level every time a node is re-expanded. Cache under the `facet:`
+    # prefix so /catalog/invalidate clears these too.
+    cache_key = (
+        f"facet:{credentials_hash(cfg)}:period:{db.upper()}:{schema.upper()}:"
+        f"{name.upper()}:{column}:{body.type}:{body.grain}:"
+        f"{body.parent or ''}:{body.clip or ''}:"
+        f"{_filters_fingerprint([f for f in body.filters if f.column != column])}"
+    )
+    rows = facet_cache.get(cache_key)
+    if rows is None:
+        try:
+            _, rows = run_query(cfg, sql)
+        except SnowflakeError as exc:
+            raise _http_snowflake(exc) from exc
+        facet_cache.set(cache_key, rows)
 
     values: list[FacetValue] = []
     for raw_value, count in rows:

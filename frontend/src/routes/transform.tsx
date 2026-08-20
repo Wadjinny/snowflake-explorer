@@ -16,7 +16,6 @@ import Spinner from '../components/Spinner'
 import TransformBuilder, {
   type TransformCollapseApi,
 } from '../components/TransformBuilder'
-import TransformChart from '../components/TransformChart'
 import {
   BookmarkIcon,
   CloseIcon,
@@ -51,6 +50,10 @@ import type { WorkspaceOutletContext } from '../workspaceOutlet'
 const SqlPreviewModal = lazy(
   () => import('../components/SqlPreviewModal'),
 )
+
+// Splits ECharts out of this route's chunk so opening a transform renders the
+// builder and table without waiting on the charting library.
+const TransformChart = lazy(() => import('../components/TransformChart'))
 
 const PAGE_SIZES = [50, 100, 200, 500, 1000]
 
@@ -830,11 +833,19 @@ export default function TransformWorkspace() {
                 </div>
               </div>
               <div className="panel-body">
-                <TransformChart
-                  data={result}
-                  chart={chart!}
-                  onChange={setChart}
-                />
+                <Suspense
+                  fallback={
+                    <div className="empty-hint">
+                      <Spinner size="md" label="Loading chart…" block />
+                    </div>
+                  }
+                >
+                  <TransformChart
+                    data={result}
+                    chart={chart!}
+                    onChange={setChart}
+                  />
+                </Suspense>
               </div>
             </Panel>
           </Group>
