@@ -1,4 +1,4 @@
-snowflake-explorer.w-ilyas.site {
+snowflake-explorer.w-ilyas.ink, snowflake-explorer.w-ilyas.site {
 	# Hash comes from SF_EXPLORER_AUTH_HASH on the host. The baked fallback is a
 	# bcrypt hash of a discarded random password, so a missing env var locks the
 	# site instead of publishing it.
