@@ -62,10 +62,9 @@ async function apiFetch<T>(
       } else {
         const text = (await res.text()).trim()
         if (text.startsWith('<!') || text.toLowerCase().includes('<html')) {
-          detail =
-            res.status === 502
-              ? 'Bad gateway from the API (schema change or upstream error). Try refresh.'
-              : `Request failed (${res.status})`
+          // An HTML body is the proxy's error page, not the API: the backend's
+          // JSON detail never reached us, so do not guess at a cause.
+          detail = `API unreachable (HTTP ${res.status} from the proxy). The backend may be down; check its logs.`
         } else if (text) {
           detail = text.slice(0, 400)
         }

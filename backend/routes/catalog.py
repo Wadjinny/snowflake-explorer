@@ -3,9 +3,10 @@ from snowflake.connector.errors import Error as SnowflakeError
 
 from columns import invalidate_columns
 from deps import get_connection
+from errors import snowflake_http_error
 from models import NameItem, ObjectItem, SchemaItem, SnowflakeConnection
 from query_cache import catalog_cache, count_cache, facet_cache
-from snowflake_client import credentials_hash, fqn, run_query, snowflake_error_detail
+from snowflake_client import credentials_hash, fqn, run_query
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -47,9 +48,7 @@ def list_databases(
     try:
         columns, rows = run_query(cfg, "SHOW DATABASES")
     except SnowflakeError as exc:
-        raise HTTPException(
-            status_code=502, detail=snowflake_error_detail(exc)
-        ) from exc
+        raise snowflake_http_error(exc) from exc
     try:
         name_i = _col_index(columns, "name")
     except KeyError:
@@ -75,15 +74,13 @@ def list_all_schemas(
     try:
         columns, rows = run_query(cfg, "SHOW TERSE SCHEMAS IN ACCOUNT")
     except SnowflakeError as exc:
-        raise HTTPException(
-            status_code=502, detail=snowflake_error_detail(exc)
-        ) from exc
+        raise snowflake_http_error(exc) from exc
     try:
         name_i = _col_index(columns, "name")
         db_i = _col_index(columns, "database_name")
     except KeyError as exc:
         raise HTTPException(
-            status_code=502,
+            status_code=500,
             detail=f"Unexpected SHOW SCHEMAS columns: {columns}",
         ) from exc
 
@@ -117,9 +114,7 @@ def list_schemas(
     try:
         columns, rows = run_query(cfg, f"SHOW SCHEMAS IN DATABASE {fqn(db)}")
     except SnowflakeError as exc:
-        raise HTTPException(
-            status_code=502, detail=snowflake_error_detail(exc)
-        ) from exc
+        raise snowflake_http_error(exc) from exc
     try:
         name_i = _col_index(columns, "name")
     except KeyError:
@@ -155,9 +150,7 @@ def _load_database_objects(
     try:
         _, rows = run_query(cfg, sql)
     except SnowflakeError as exc:
-        raise HTTPException(
-            status_code=502, detail=snowflake_error_detail(exc)
-        ) from exc
+        raise snowflake_http_error(exc) from exc
 
     by_schema: dict[str, list[ObjectItem]] = {}
     for table_schema, name, table_type, row_count in rows:

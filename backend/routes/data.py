@@ -13,6 +13,7 @@ from columns import (
     is_account_usage,
 )
 from deps import get_connection
+from errors import snowflake_http_error
 from filters import (
     FACETABLE,
     build_period_facet_sql,
@@ -48,7 +49,6 @@ from snowflake_client import (
     credentials_hash,
     fqn,
     is_invalid_identifier_error,
-    is_sql_compilation_error,
     quote_ident,
     run_query,
     run_query_typed,
@@ -189,15 +189,6 @@ def _resolve_total(
             "COUNT failed for %s: %s", table, snowflake_error_detail(exc)
         )
         return -1
-
-
-def _http_snowflake(exc: SnowflakeError) -> HTTPException:
-    detail = snowflake_error_detail(exc)
-    logger.warning("Snowflake error: %s", detail)
-    # Compilation / missing-column errors are client/schema issues. Use 4xx so
-    # reverse proxies (Cloudflare) do not replace the JSON body with a 502 page.
-    status = 400 if is_sql_compilation_error(exc) else 502
-    return HTTPException(status_code=status, detail=detail)
 
 
 def _meta_name_sets(meta: list[ColumnMeta]) -> tuple[set[str], set[str]]:
@@ -394,7 +385,7 @@ def preview_object(
     try:
         meta = describe_columns(cfg, db, schema, name)
     except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+        raise snowflake_http_error(exc) from exc
 
     try:
         return json_response(
@@ -406,7 +397,7 @@ def preview_object(
     except SnowflakeError as exc:
         # Stale DESC cache after ALTER/DROP COLUMN → refresh once and retry.
         if not is_invalid_identifier_error(exc):
-            raise _http_snowflake(exc) from exc
+            raise snowflake_http_error(exc) from exc
         logger.info(
             "Preview invalid identifier for %s.%s.%s; refreshing columns",
             db,
@@ -424,7 +415,7 @@ def preview_object(
                 PreviewResult,
             )
         except SnowflakeError as retry_exc:
-            raise _http_snowflake(retry_exc) from retry_exc
+            raise snowflake_http_error(retry_exc) from retry_exc
 
 
 def _run_count(
@@ -484,7 +475,7 @@ def count_object(
     try:
         meta = describe_columns(cfg, db, schema, name)
     except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+        raise snowflake_http_error(exc) from exc
 
     try:
         total = _run_count(
@@ -492,7 +483,7 @@ def count_object(
         )
     except SnowflakeError as exc:
         if not is_invalid_identifier_error(exc):
-            raise _http_snowflake(exc) from exc
+            raise snowflake_http_error(exc) from exc
         invalidate_columns(cfg, db, schema, name)
         invalidate_totals(cfg, db, schema, name)
         try:
@@ -501,10 +492,10 @@ def count_object(
                 cfg, db=db, schema=schema, name=name, body=body, meta=meta
             )
         except SnowflakeError as retry_exc:
-            raise _http_snowflake(retry_exc) from retry_exc
+            raise snowflake_http_error(retry_exc) from retry_exc
 
     if total < 0:
-        raise HTTPException(status_code=502, detail="COUNT failed")
+        raise HTTPException(status_code=500, detail="COUNT failed")
     return CountResult(total=total)
 
 
@@ -562,7 +553,7 @@ def facet_column(
         try:
             _, rows = run_query(cfg, sql, params)
         except SnowflakeError as exc:
-            raise _http_snowflake(exc) from exc
+            raise snowflake_http_error(exc) from exc
         truncated = len(rows) > _FACET_FETCH_CAP
         all_rows = rows[:_FACET_FETCH_CAP]
         cached = {"rows": all_rows, "truncated": truncated}
@@ -653,7 +644,7 @@ def facet_periods(
         try:
             _, rows = run_query(cfg, sql)
         except SnowflakeError as exc:
-            raise _http_snowflake(exc) from exc
+            raise snowflake_http_error(exc) from exc
         facet_cache.set(cache_key, rows)
 
     values: list[FacetValue] = []

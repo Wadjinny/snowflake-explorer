@@ -9,6 +9,7 @@ from snowflake.connector.errors import Error as SnowflakeError
 
 from columns import describe_columns
 from deps import get_connection
+from errors import snowflake_http_error
 from models import (
     ColumnInfo,
     ColumnType,
@@ -43,12 +44,6 @@ def _total_cache_key(cfg: SnowflakeConnection, inner_sql: str) -> str:
     return f"total:{credentials_hash(cfg)}:transform:{digest}"
 
 
-def _http_snowflake(exc: SnowflakeError) -> HTTPException:
-    detail = snowflake_error_detail(exc)
-    logger.warning("Snowflake error: %s", detail)
-    return HTTPException(status_code=502, detail=detail)
-
-
 def _probe_schemas(
     cfg: SnowflakeConnection,
     recipe: Any,
@@ -65,7 +60,7 @@ def _probe_schemas(
         try:
             meta = describe_columns(cfg, obj.database, obj.schema_name, obj.name)
         except SnowflakeError as exc:
-            raise _http_snowflake(exc) from exc
+            raise snowflake_http_error(exc) from exc
         schemas[alias] = [(c.name, c.type) for c in meta]
     return schemas
 
@@ -85,7 +80,7 @@ def _fetch_pivot_values(
     try:
         _, rows = run_query(cfg, sql)
     except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+        raise snowflake_http_error(exc) from exc
     return [r[0] for r in rows]
 
 
@@ -158,7 +153,7 @@ def run_transform(
             fetch=lambda: run_query_typed(cfg, data_sql),
         )
     except SnowflakeError as exc:
-        raise _http_snowflake(exc) from exc
+        raise snowflake_http_error(exc) from exc
 
     return json_response(
         {

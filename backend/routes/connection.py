@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from snowflake.connector.errors import Error as SnowflakeError
 
 from deps import get_connection
+from errors import snowflake_http_error
 from models import OkResponse, SnowflakeConnection
-from snowflake_client import run_query, snowflake_error_detail
+from snowflake_client import run_query
 
 router = APIRouter(prefix="/api/connection", tags=["connection"])
 
@@ -15,7 +16,5 @@ def test_connection(
     try:
         run_query(cfg, "SELECT 1")
     except SnowflakeError as exc:
-        raise HTTPException(
-            status_code=502, detail=snowflake_error_detail(exc)
-        ) from exc
+        raise snowflake_http_error(exc) from exc
     return OkResponse()
